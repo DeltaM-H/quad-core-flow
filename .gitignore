@@ -1,0 +1,13 @@
+# QCF development artifacts
+output/
+tests/
+tasks/
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# pytest
+.pytest_cache/

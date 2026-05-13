@@ -1,0 +1,15 @@
+请对第 {{ round_num }} 轮的代码进行安全审计。
+
+设计文档:
+{{ design_content }}
+
+检查项目：SQL注入、XSS、CSRF、权限校验缺失、敏感信息泄露、输入验证不严、数据完整性风险。
+
+请在回复的最后一行输出审计结论，格式必须严格如下：
+AUDIT_RESULT: PASS
+或者
+AUDIT_RESULT: FAIL
+
+如果 FAIL，请使用 Write 工具将安全问题列表写入文件 {{ issues_file }}（每行一个问题的格式：文件路径|严重度(high/medium/low)|问题描述），同时在回复中列出问题。
+
+请开始审计。

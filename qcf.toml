@@ -1,0 +1,29 @@
+[workspace]
+docs_dir = "output/docs"
+status_file = "/tmp/qcf-status.json"
+log_dir = "/tmp"
+
+[stages]
+max_rounds = 3
+implement_timeout = 600
+fix_timeout = 600
+review_timeout = 450
+audit_timeout = 300
+scout_timeout = 180
+
+[models]
+review = "opus"
+audit = ""
+
+[commit]
+enabled = false
+
+[claude]
+allowed_tools = ["Write", "Read", "Edit", "Bash"]
+output_format = "json"
+
+[hooks]
+# 这些命令在每个事件点执行，通过 QCF_* 环境变量获取上下文
+# post-start = ["echo 'QCF started: doc=$QCF_DESIGN_DOC'"]
+# on-passed = ["echo '[inline-hook] Passed round $QCF_ROUND'"]
+# on-failed = ["echo '[inline-hook] Failed: $QCF_FAILED_STAGES'"]

@@ -1,0 +1,94 @@
+"""Jinja2 prompt template loading and rendering."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+from jinja2 import Environment, FileSystemLoader
+
+_TEMPLATE_DIR = Path(__file__).parent
+_env = Environment(
+    loader=FileSystemLoader(str(_TEMPLATE_DIR)),
+    trim_blocks=True,
+    lstrip_blocks=True,
+)
+
+
+def render(template_name: str, **kwargs) -> str:
+    """Render a prompt template with *kwargs* as context variables.
+
+    Available templates:
+        - ``implement.j2``
+        - ``fix.j2``
+        - ``review.j2``
+        - ``audit.j2``
+        - ``tech-lead.j2``
+        - ``scout.j2``
+    """
+    if not template_name.endswith(".j2"):
+        template_name += ".j2"
+    template = _env.get_template(template_name)
+    return template.render(**kwargs)
+
+
+def project_tree(cwd: Path | None = None, max_depth: int = 3) -> str:
+    """Generate an ASCII project tree (excluding common noise)."""
+    try:
+        result = subprocess.run(
+            ["find", ".", "-maxdepth", str(max_depth),
+             "-not", "-path", "./__pycache__/*",
+             "-not", "-path", "./*.egg-info/*",
+             "-not", "-path", "./build/*",
+             "-not", "-path", "./.git/*",
+             "-not", "-path", "./node_modules/*",
+             "-not", "-name", "__pycache__",
+             "-not", "-name", "*.pyc",
+             "-not", "-name", ".git"],
+            cwd=cwd or Path.cwd(),
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.stdout
+    except Exception:
+        return "(unable to generate tree)"
+
+
+def implement_prompt(*, design_doc_path: str | Path) -> str:
+    return render("implement", design_doc_path=str(design_doc_path))
+
+
+def fix_prompt(*, design_doc_path: str | Path, issues_content: str) -> str:
+    return render("fix",
+                  design_doc_path=str(design_doc_path),
+                  issues_content=issues_content)
+
+
+def review_prompt(*, round_num: int, design_content: str, issues_file: str | Path) -> str:
+    return render("review",
+                  round_num=round_num,
+                  design_content=design_content,
+                  issues_file=str(issues_file))
+
+
+def audit_prompt(*, round_num: int, design_content: str, issues_file: str | Path) -> str:
+    return render("audit",
+                  round_num=round_num,
+                  design_content=design_content,
+                  issues_file=str(issues_file))
+
+
+def tech_lead_prompt(*, task_description: str, design_doc_path: str | Path, project_tree_str: str = "") -> str:
+    return render("tech-lead",
+                  task_description=task_description,
+                  design_doc_path=str(design_doc_path),
+                  project_tree=project_tree_str)
+
+
+def scout_prompt(*, project_tree_str: str = "", last_task: str = "",
+                  round_history: list[str] | None = None,
+                  task_output_path: str | Path = "") -> str:
+    return render("scout",
+                  project_tree=project_tree_str,
+                  last_task=last_task,
+                  round_history=round_history or [],
+                  task_output_path=str(task_output_path))

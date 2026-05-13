@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qcf"
+version = "0.1.0"
+description = "The Quad-Core Flow (QCF) — tech-lead → coder → reviewer → security"
+requires-python = ">=3.10"
+dependencies = [
+    "jinja2>=3",
+    'tomli>=1.1; python_version < "3.11"',
+]
+
+[project.scripts]
+qcf = "qcf.cli:main"
+pipeline = "qcf.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["qcf*"]
+
+[tool.setuptools.package-data]
+qcf = ["prompts/*.j2", "default_config.toml"]
