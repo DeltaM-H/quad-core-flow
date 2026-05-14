@@ -1,10 +1,11 @@
-"""QCF state machine — tech-lead → implement → review + audit → scout."""
+"""QCF state machine — tech-lead → implement → review + audit → pilot."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -13,14 +14,17 @@ from typing import Any, Optional
 
 from .config import Config
 from .models import (
+    ActionSuggestion,
     AuditOutput,
     Issue,
     ReviewOutput,
     RoundStageMetric,
     RoundsOverview,
     extract_audit_result,
+    extract_action_suggestion,
     extract_review_result,
 )
+from .progress import AgentProgress
 from . import prompts
 from .hooks import Hooks
 from .runner import run_claude
@@ -74,13 +78,27 @@ def _read_safe(path: Path) -> str:
     return f"(file not found: {path})"
 
 
+_SUMMARY_PATTERN = re.compile(
+    r"PROJECT_SUMMARY_START\s*\n(.*?)\n\s*PROJECT_SUMMARY_END",
+    re.DOTALL,
+)
+
+
+def _extract_project_summary(text: str) -> str:
+    """Extract the PROJECT_SUMMARY block from Pilot output."""
+    m = _SUMMARY_PATTERN.search(text)
+    if m:
+        return m.group(1).strip()[:2000]  # hard cap at 2KB
+    return ""
+
+
 def _save_report(text: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(text)
 
 
-def _git(cmd: list[str]) -> int:
-    return subprocess.run(cmd).returncode
+def _git(cmd: list[str], cwd: Path | None = None) -> int:
+    return subprocess.run(cmd, cwd=cwd).returncode
 
 
 # ══════════════════════════════════════════════════════════════
@@ -129,6 +147,8 @@ async def _run_implement(
         model=cfg.model_for("implement"),
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
+        max_output_tokens=cfg.max_output_tokens,
+        thinking_budget=cfg.thinking_budget,
         cwd=cfg.root_dir,
     )
     _write_status(cfg.status_file, {
@@ -138,7 +158,7 @@ async def _run_implement(
     return result_text, metrics
 
 
-async def _run_tech_lead(cfg: Config, task_path: Path) -> Path | None:
+async def _run_tech_lead(cfg: Config, task_path: Path, summary_pack: str = "") -> Path | None:
     """Core 1: Tech-Lead — analyze project and produce a design document."""
     _write_status(cfg.status_file, {
         "current_round": 1,
@@ -157,6 +177,7 @@ async def _run_tech_lead(cfg: Config, task_path: Path) -> Path | None:
         task_description=task_description,
         design_doc_path=str(design_doc),
         project_tree_str=tree,
+        summary_pack=summary_pack,
     )
     log_path = cfg.log_dir / "qcf-tech-lead.log"
     result_text, metrics = await run_claude(
@@ -164,6 +185,8 @@ async def _run_tech_lead(cfg: Config, task_path: Path) -> Path | None:
         timeout=cfg.tech_lead_timeout,
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
+        max_output_tokens=cfg.max_output_tokens,
+        thinking_budget=cfg.thinking_budget,
         cwd=cfg.root_dir,
     )
 
@@ -179,55 +202,68 @@ async def _run_tech_lead(cfg: Config, task_path: Path) -> Path | None:
     return design_doc if success else None
 
 
-async def _run_scout(cfg: Config, last_task: str = "",
-                     round_history: list[str] | None = None) -> str:
-    """Core 5: Scout — assess project and decide if another iteration is needed.
+async def _run_pilot(cfg: Config, last_task: str = "",
+                     round_history: list[str] | None = None) -> tuple[str, str]:
+    """Core 5: Pilot — assess project, extract structured summary, decide next step.
 
     Returns:
-        "STEADY_STATE" if no new task is needed,
-        or path to a new task file if more work is needed.
+        ``(verdict, project_summary)`` where:
+        - verdict is ``"STEADY_STATE"`` or a path to a new task file.
+        - project_summary is the extracted PROJECT_SUMMARY block (or empty string).
     """
     _write_status(cfg.status_file, {
         "current_round": 0,
-        "current_stage": "scout (running)",
+        "current_stage": "pilot (running)",
     })
 
     tree = prompts.project_tree(cwd=cfg.root_dir, max_depth=4)
     cfg.task_dir.mkdir(parents=True, exist_ok=True)
 
-    prompt_text = prompts.scout_prompt(
+    prompt_text = prompts.pilot_prompt(
         project_tree_str=tree,
         last_task=last_task,
         round_history=round_history or [],
-        task_output_path=str(cfg.scout_task_file),
+        task_output_path=str(cfg.pilot_task_file),
     )
-    log_path = cfg.log_dir / "qcf-scout.log"
+    log_path = cfg.log_dir / "qcf-pilot.log"
     result_text, metrics = await run_claude(
         prompt_text, log_path,
-        timeout=cfg.scout_timeout,
+        timeout=cfg.pilot_timeout,
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
+        max_output_tokens=cfg.max_output_tokens,
+        thinking_budget=cfg.thinking_budget,
         cwd=cfg.root_dir,
     )
 
-    # Clean up scout task output if it exists
+    # Extract structured project summary from Pilot output
+    project_summary = _extract_project_summary(result_text)
+    if project_summary:
+        try:
+            cfg.summary_pack_file.parent.mkdir(parents=True, exist_ok=True)
+            cfg.summary_pack_file.write_text(project_summary)
+            os.chmod(cfg.summary_pack_file, 0o600)
+        except OSError:
+            pass
+
+    # Clean up pilot task output if it exists
     verdict = "STEADY_STATE"
     new_task: Path | None = None
-    if cfg.scout_task_file.exists():
-        content = cfg.scout_task_file.read_text().strip()
+    if cfg.pilot_task_file.exists():
+        content = cfg.pilot_task_file.read_text().strip()
         if "STEADY_STATE" not in content:
             # Write as a new task file
-            task_name = f"scout-{time.strftime('%Y%m%d-%H%M%S')}.md"
+            task_name = f"pilot-{time.strftime('%Y%m%d-%H%M%S')}.md"
             new_task = cfg.task_dir / task_name
             cfg.task_dir.mkdir(parents=True, exist_ok=True)
             new_task.write_text(content)
             verdict = str(new_task)
-        cfg.scout_task_file.unlink(missing_ok=True)
+        cfg.pilot_task_file.unlink(missing_ok=True)
 
     verdict_tag = "STEADY_STATE" if verdict == "STEADY_STATE" else "NEW_TASK"
-    print(f"  ⚡ Scout: {'🟢 STEADY_STATE' if verdict == 'STEADY_STATE' else '🔄 new task: ' + verdict}")
-    print(f"[QCF] stage: scout → {verdict_tag}")
-    return verdict
+    print(f"  ⚡ Pilot: {'🟢 STEADY_STATE' if verdict == 'STEADY_STATE' else '🔄 new task: ' + verdict}")
+    print(f"[QCF] stage: pilot → {verdict_tag}")
+    return verdict, project_summary
 
 
 async def _run_fix(
@@ -253,6 +289,8 @@ async def _run_fix(
         model=cfg.model_for("fix"),
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
+        max_output_tokens=cfg.max_output_tokens,
+        thinking_budget=cfg.thinking_budget,
         cwd=cfg.root_dir,
     )
     _write_status(cfg.status_file, {
@@ -264,12 +302,12 @@ async def _run_fix(
 
 async def _run_review(
     cfg: Config,
-    design_content: str,
+    design_doc: Path,
     round_num: int,
 ) -> ReviewOutput:
     prompt_text = prompts.review_prompt(
         round_num=round_num,
-        design_content=design_content,
+        design_doc_path=str(design_doc),
         issues_file=str(cfg.review_issues_file),
     )
     log_path = cfg.log_dir / f"qcf-review-{round_num:02d}.log"
@@ -279,6 +317,8 @@ async def _run_review(
         model=cfg.model_for("review"),
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
+        max_output_tokens=cfg.max_output_tokens,
+        thinking_budget=cfg.thinking_budget,
         cwd=cfg.root_dir,
     )
 
@@ -303,12 +343,12 @@ async def _run_review(
 
 async def _run_audit(
     cfg: Config,
-    design_content: str,
+    design_doc: Path,
     round_num: int,
 ) -> AuditOutput:
     prompt_text = prompts.audit_prompt(
         round_num=round_num,
-        design_content=design_content,
+        design_doc_path=str(design_doc),
         issues_file=str(cfg.audit_issues_file),
     )
     log_path = cfg.log_dir / f"qcf-audit-{round_num:02d}.log"
@@ -318,6 +358,8 @@ async def _run_audit(
         model=cfg.model_for("audit"),
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
+        max_output_tokens=cfg.max_output_tokens,
+        thinking_budget=cfg.thinking_budget,
         cwd=cfg.root_dir,
     )
 
@@ -333,36 +375,43 @@ async def _run_audit(
             if issue:
                 issues.append(issue)
 
+    # Parse action_suggestion from result_text directly (not from log file)
+    action_suggestion = extract_action_suggestion(result_text)
+
     colored_res = _color_result(result) + (_red(" | TIMEOUT") if metrics.timed_out else "")
     print(f"  ⚡ Audit: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
     print(f"     ↳ {summary[:120]}")
 
-    return AuditOutput(result=result, summary=summary, vulnerabilities=issues)
+    return AuditOutput(result=result, summary=summary, vulnerabilities=issues,
+                       action_suggestion=action_suggestion)
 
 
 # ══════════════════════════════════════════════════════════════
 # Commit & fail report
 # ══════════════════════════════════════════════════════════════
 
-def _auto_commit(cfg: Config, round_num: int) -> None:
+def _auto_commit(cfg: Config, round_num: int, stage_name: str = "implement") -> None:
     if not cfg.commit_enabled:
         print("  [auto-commit disabled by config]")
         return
 
     print("  [auto-commit]...")
-    ret = _git(["git", "add", "-u"])
+    # Stage-specific file patterns
+    if stage_name == "tech-lead":
+        ret = _git(["git", "add", cfg.tech_lead_dir.name + "/"], cwd=cfg.root_dir)
+    else:
+        ret = _git(["git", "add", "-u"], cwd=cfg.root_dir)
     if ret != 0:
         print("  → git add failed, skipping commit")
         return
 
-    ret = _git(["git", "diff", "--cached", "--quiet"])
+    ret = _git(["git", "diff", "--cached", "--quiet"], cwd=cfg.root_dir)
     if ret == 0:
         print("  → Nothing to commit.")
         return
 
-    msg = cfg.commit_message(round_num)
-    # Use heredoc-style commit message to handle multiline
-    ret = subprocess.run(["git", "commit", "-m", msg]).returncode
+    msg = cfg.commit_message_stage(stage_name, round_num)
+    ret = subprocess.run(["git", "commit", "-m", msg], cwd=cfg.root_dir).returncode
     print("  → Committed." if ret == 0 else "  → Commit failed.")
 
 
@@ -436,6 +485,70 @@ def _save_final_reports(cfg: Config, round_num: int, final_result: str) -> None:
     print(f"\n  → Review report: {cfg.out_review_dir / f'round-{round_num:02d}-review-v1.0.md'}")
     print(f"  → Audit report: {cfg.out_audit_dir / f'round-{round_num:02d}-audit-v1.0.md'}")
     print(f"  → Final result: {final_result}")
+
+
+def _write_summary_pack(
+    cfg: Config,
+    new_task: Path,
+    round_history: list[str],
+) -> str:
+    """Write a compact summary pack for the next Tech-Lead iteration.
+
+    Extracts key classes, imports, and recent results from the project,
+    writing to ``/tmp/qcf-summary-pack.json`` (hard cap at 10 KB).
+
+    Returns:
+        The summary content as a string (for passing to Tech-Lead in-process),
+        or empty string on failure.
+    """
+    import json
+    import subprocess
+
+    summary: dict[str, object] = {
+        "new_task": new_task.name,
+        "task_description": new_task.read_text("utf-8", errors="replace")[:2000],
+        "recent_history": round_history[-10:],
+    }
+
+    # Extract top-level module/class names from qcf/
+    try:
+        result = subprocess.run(
+            ["find", "qcf", "-name", "*.py", "-maxdepth", 2],
+            capture_output=True, text=True, timeout=10,
+            cwd=str(cfg.root_dir),
+        )
+        summary["qcf_modules"] = [l.strip() for l in result.stdout.split("\n") if l.strip()]
+    except Exception:
+        summary["qcf_modules"] = []
+
+    # Extract key imports from qcf/*.py
+    imports: list[str] = []
+    try:
+        for py_file in cfg.root_dir.glob("qcf/*.py"):
+            if py_file.name == "__init__.py":
+                continue
+            content = py_file.read_text("utf-8", errors="replace")
+            for line in content.split("\n"):
+                if line.startswith("import ") or line.startswith("from "):
+                    imports.append(f"{py_file.name}: {line.strip()}")
+        summary["key_imports"] = imports[:30]  # Cap at 30 lines
+    except Exception:
+        summary["key_imports"] = []
+
+    summary_text = json.dumps(summary, ensure_ascii=False, indent=2, default=str)
+
+    # Hard cap at 10 KB
+    if len(summary_text) > 10240:
+        summary_text = summary_text[:10240] + '\n...\n}'
+
+    # Write to file (truncated)
+    try:
+        cfg.summary_pack_file.parent.mkdir(parents=True, exist_ok=True)
+        cfg.summary_pack_file.write_text(summary_text)
+    except OSError:
+        pass
+
+    return summary_text
 
 
 # ══════════════════════════════════════════════════════════════
@@ -600,31 +713,44 @@ class QCFEngine:
         self.reporter = reporter or StdoutReporter()
         self.hooks = hooks or config.build_hooks()
         self.overview = RoundsOverview()
+        self._consecutive_fails = 0
+        self._no_commit = False
 
     async def run(
         self,
         design_doc: Path,
         max_rounds: int | None = None,
         start_stage: str = "implement",
-    ) -> bool:
+        no_commit: bool = False,
+    ) -> str:
         """Execute the QCF inner loop (implement → review → audit).
 
-        Returns ``True`` if all checks passed (and commit was made),
-        ``False`` if max rounds were exhausted.
+        Returns:
+            ``"PASS"`` — all checks passed (commit made).
+            ``"FAIL"`` — max rounds exhausted.
+            ``"REPLAN"`` — evolution sandbox triggered.
         """
         cfg = self.config
         design_doc = Path(design_doc)
+        self._no_commit = no_commit
+        self._consecutive_fails = 0
 
         if not design_doc.exists():
             print(f"Error: {design_doc} not found")
-            return False
+            return "FAIL"
 
-        design_content = design_doc.read_text()
+        design_content = design_doc.read_text()  # kept for replan context
 
         # MEDIUM-2: Restrict permissions on all files created by this process
         # and its subprocesses (including /tmp review/audit issue files).
         os.umask(0o077)
         max_rounds = max_rounds or cfg.max_rounds
+
+        # Initialize AgentProgress dashboard
+        progress = AgentProgress(
+            target=design_doc.stem.replace("-design", ""),
+            max_rounds=max_rounds,
+        )
 
         # Initial status
         _write_status(cfg.status_file, {
@@ -644,6 +770,7 @@ class QCFEngine:
         round_num = 1
         last_review = ReviewOutput(result="N/A", summary="")
         last_audit = AuditOutput(result="N/A", summary="")
+        fail_reports: list[str] = []
 
         while round_num <= max_rounds:
             # Clean previous issue files
@@ -655,11 +782,13 @@ class QCFEngine:
                 stage_name = "implement"
                 await self.hooks.run_async("pre-stage", stage=stage_name, round=round_num)
                 self.reporter.on_stage_start(round_num, max_rounds, stage_name)
+                progress.update_before_round(stage_name, round_num)
                 result_text, metrics = await _run_implement(cfg, design_doc, round_num)
             else:
                 stage_name = "fix"
                 await self.hooks.run_async("pre-stage", stage=stage_name, round=round_num)
                 self.reporter.on_stage_start(round_num, max_rounds, stage_name)
+                progress.update_before_round(stage_name, round_num)
                 result_text, metrics = await _run_fix(cfg, design_doc, round_num)
 
             stage_result = "TIMEOUT" if metrics.timed_out else "PASS"
@@ -668,6 +797,11 @@ class QCFEngine:
                 input_tokens=metrics.input_tokens, output_tokens=metrics.output_tokens,
             ))
             self.reporter.on_stage_end(round_num, stage_name, metrics)
+            progress.update_on_complete({
+                "stage": stage_name, "round": round_num,
+                "status": stage_result,
+                "next_action": "review + audit" if not metrics.timed_out else f"round {round_num + 1}",
+            })
             print(f"[QCF] stage: {stage_name} → {stage_result}")
             await self.hooks.run_async("post-stage",
                 stage=stage_name, round=round_num,
@@ -676,10 +810,31 @@ class QCFEngine:
                 timed_out=metrics.timed_out)
 
             if metrics.timed_out:
+                self._consecutive_fails += 1
                 self.overview.add(RoundStageMetric(stage="review", result="SKIP",
                                                    summary="[implement/fix timed out]"))
                 self.overview.add(RoundStageMetric(stage="audit", result="SKIP",
                                                    summary="[implement/fix timed out]"))
+                progress.update_on_complete({
+                    "stage": stage_name, "round": round_num,
+                    "status": "TIMEOUT",
+                    "failed_stages": [stage_name],
+                    "next_action": f"round {round_num + 1}",
+                })
+
+                # Check consecutive fails for REPLAN
+                if self._consecutive_fails >= cfg.max_consecutive_fails:
+                    print(f"\n  ⛔ REPLAN triggered — {self._consecutive_fails} consecutive failures")
+                    _write_status(cfg.status_file, {"current_stage": "replan"})
+                    progress.update_on_complete({
+                        "stage": "replan", "round": round_num,
+                        "status": "REPLAN",
+                        "action_suggestion": "REPLAN",
+                        "next_action": "evolution sandbox",
+                    })
+                    await self._handle_replan(cfg, fail_reports, design_content)
+                    return "REPLAN"
+
                 print(f"\n  → 结果: implement/fix {_red('TIMEOUT')} → 进入 Round {round_num + 1}/{max_rounds}")
                 round_num += 1
                 continue
@@ -687,6 +842,7 @@ class QCFEngine:
             # ── Stage 2: Review + Audit (parallel) ──
             self.reporter.on_stage_start(round_num, max_rounds, "review")
             await self.hooks.run_async("pre-stage", stage="review+audit", round=round_num)
+            progress.update_before_round("review+audit", round_num)
             _write_status(cfg.status_file, {
                 "current_round": round_num,
                 "current_stage": "reviewing + auditing",
@@ -694,14 +850,15 @@ class QCFEngine:
                 "final_result": None,
             })
 
-            review_task = _run_review(cfg, design_content, round_num)
-            audit_task = _run_audit(cfg, design_content, round_num)
+            review_task = _run_review(cfg, design_doc, round_num)
+            audit_task = _run_audit(cfg, design_doc, round_num)
             review, audit = await asyncio.gather(review_task, audit_task)
 
             last_review, last_audit = review, audit
 
             print(f"[QCF] stage: review → {review.result}")
             print(f"[QCF] stage: audit → {audit.result}")
+            print(f"[QCF] action_suggestion → {audit.action_suggestion}")
 
             self.overview.add(RoundStageMetric(
                 stage="review", result=review.result, summary=review.summary,
@@ -736,6 +893,7 @@ class QCFEngine:
 
             # ── Decision ──
             if review.result == "PASS" and audit.result == "PASS":
+                self._consecutive_fails = 0
                 print(f"[QCF] round {round_num} → PASS")
                 self.reporter.on_passed(round_num, review, audit)
                 await self.hooks.run_async("on-passed",
@@ -743,8 +901,15 @@ class QCFEngine:
                     review_result=review.result, audit_result=audit.result,
                     review_summary=review.summary, audit_summary=audit.summary)
 
+                progress.update_on_complete({
+                    "stage": "round", "round": round_num,
+                    "status": "PASS", "task": f"round-{round_num:02d} all checks passed",
+                    "next_action": "completed",
+                })
+
                 _save_final_reports(cfg, round_num, "PASS")
-                _auto_commit(cfg, round_num)
+                if not self._no_commit:
+                    _auto_commit(cfg, round_num, stage_name)
 
                 self.overview.print_final_summary()
                 _write_status(cfg.status_file, {
@@ -754,27 +919,62 @@ class QCFEngine:
                     "final_result": "PASS — all checks passed",
                     "result_analysis": f"review: {review.summary}\naudit: {audit.summary}",
                 })
-                return True
+                return "PASS"
 
             # FAIL → next round
-            print(f"[QCF] round {round_num} → FAIL")
+            self._consecutive_fails += 1
+            print(f"[QCF] round {round_num} → FAIL (consecutive fails: {self._consecutive_fails})")
             self.reporter.on_failed(round_num, max_rounds, review, audit)
+
+            progress.update_on_complete({
+                "stage": "round", "round": round_num,
+                "status": "FAIL",
+                "failed_stages": [s for s, r in [("review", review.result), ("audit", audit.result)] if r != "PASS"],
+                "action_suggestion": audit.action_suggestion,
+                "next_action": "evolution sandbox" if (
+                    audit.action_suggestion == "REPLAN" or self._consecutive_fails >= cfg.max_consecutive_fails
+                ) else f"round {round_num + 1}",
+            })
+
+            # Check for REPLAN
+            if audit.action_suggestion == "REPLAN" or self._consecutive_fails >= cfg.max_consecutive_fails:
+                print(f"\n  ⛔ REPLAN triggered — escalation to evolution sandbox")
+                print(f"    action_suggestion={audit.action_suggestion}, consecutive_fails={self._consecutive_fails}")
+                _write_status(cfg.status_file, {"current_stage": "replan"})
+                # Write fail report before escalation (design requires escalation report)
+                report_text = _write_fail_report(cfg, round_num, review, audit)
+                fail_reports.append(report_text)
+                await self._handle_replan(cfg, fail_reports, design_content)
+                return "REPLAN"
+
             fails = [s for s, r in [("review", review.result), ("audit", audit.result)] if r != "PASS"]
             await self.hooks.run_async("on-failed",
                 round=round_num, max_rounds=max_rounds,
                 failed_stages=",".join(fails),
                 review_result=review.result, audit_result=audit.result,
                 review_summary=review.summary, audit_summary=audit.summary)
+
+            # Build fail report for evolution context
+            report_text = _write_fail_report(cfg, round_num, review, audit)
+            fail_reports.append(report_text)
+
             round_num += 1
 
         # ── Max rounds exhausted ──
         _save_final_reports(cfg, max_rounds, "FAIL")
         report_text = _write_fail_report(cfg, max_rounds, last_review, last_audit)
+        fail_reports.append(report_text)
         self.reporter.on_exhausted(round_num, max_rounds, last_review, last_audit, report_text)
         await self.hooks.run_async("on-exhausted",
             round=max_rounds, max_rounds=max_rounds,
             review_result=last_review.result, audit_result=last_audit.result,
             fail_report=report_text)
+
+        progress.update_on_complete({
+            "stage": "exhausted", "round": max_rounds,
+            "status": "FAIL",
+            "next_action": "manual review required",
+        })
 
         self.overview.print_final_summary()
         _write_status(cfg.status_file, {
@@ -785,10 +985,35 @@ class QCFEngine:
                            f"review: {last_review.result}, audit: {last_audit.result}",
             "fail_analysis": report_text,
         })
-        return False
+        return "FAIL"
+
+    async def _handle_replan(
+        self,
+        cfg: Config,
+        fail_reports: list[str],
+        design_content: str,
+    ) -> None:
+        """Handle REPLAN trigger — escalate to evolution sandbox."""
+        print(f"\n{'=' * 50}")
+        print(f"  ⛔ REPLAN — Escalating to Evolution Sandbox")
+        print(f"{'=' * 50}")
+
+        if not cfg.evolution_enabled:
+            print("  Evolution disabled by config — skipping sandbox.")
+            return
+
+        from . import evolver
+        try:
+            success = await evolver.run_evolution(cfg, fail_reports, design_content)
+            if success:
+                print("  ✅ Evolution completed and merged.")
+            else:
+                print("  ❌ Evolution failed — see rejection report.")
+        except Exception as e:
+            print(f"  Evolution error: {e}")
 
     async def run_continuous(self, task_path: Path, max_iterations: int = 10) -> None:
-        """Outer loop: Tech-Lead → inner loop → Scout → repeat until steady state."""
+        """Outer loop: Tech-Lead → inner loop → Pilot → repeat until steady state."""
         cfg = self.config
         print(f"\n{_bold('=' * 50)}")
         print(f"  {_bold('⚡ The Quad-Core Flow — Continuous Mode')}")
@@ -807,30 +1032,40 @@ class QCFEngine:
 
         current_task = task_path
         iteration = 1
+        summary_content = ""  # Loaded from summary pack between iterations
 
         while iteration <= max_iterations:
             print(f"\n╔═══ Iteration {iteration} ═══╗")
 
             # ── Step 1: Tech-Lead (generate design doc) ──
             print(f"\n  [Core 1] Tech-Lead — analyzing project...")
-            design_doc = await _run_tech_lead(cfg, current_task)
+            design_doc = await _run_tech_lead(cfg, current_task, summary_pack=summary_content)
             if design_doc is None:
                 print("  Tech-Lead failed — aborting continuous loop.")
                 break
 
             # ── Step 2: Inner loop (implement → review → audit) ──
             print(f"\n  [Core 2-4] Starting inner loop...")
-            success = await self.run(design_doc)
+            result = await self.run(design_doc)
 
-            # Build round history for scout
+            # Handle REPLAN from inner loop
+            if result == "REPLAN":
+                print(f"\n  [QCF] Inner loop returned REPLAN — evolution sandbox initiated.")
+                _write_status(cfg.status_file, {
+                    "current_stage": "replan",
+                    "final_result": "REPLAN — evolution triggered",
+                })
+                break
+
+            # Build round history for pilot
             round_history = [
                 f"{m.stage}: {m.result}" + (f" ({m.summary[:60]})" if m.summary else "")
                 for m in self.overview.entries
             ]
 
-            # ── Step 3: Scout — decide next action ──
-            print(f"\n  [Core 5] Scout — assessing project state...")
-            verdict = await _run_scout(
+            # ── Step 3: Pilot — decide next action ──
+            print(f"\n  [Core 5] Pilot — assessing project state...")
+            verdict, project_summary = await _run_pilot(
                 cfg,
                 last_task=current_task.name,
                 round_history=round_history,
@@ -848,15 +1083,24 @@ class QCFEngine:
                 })
                 break
 
-            # New task generated by scout
+            # New task generated by Pilot — produce summary pack for next iteration
             current_task = Path(verdict)
             if not current_task.exists():
-                print(f"  Scout task file not found: {current_task}")
+                print(f"  Pilot task file not found: {current_task}")
                 break
+
+            # Use Pilot's PROJECT_SUMMARY if available, else fall back to code analysis
+            if project_summary:
+                summary_content = project_summary
+                print(f"  Project summary extracted from Pilot")
+            else:
+                summary_content = _write_summary_pack(cfg, current_task, round_history)
+            if summary_content:
+                print(f"  Summary pack written to {cfg.summary_pack_file}")
 
             print(f"\n  → New task discovered: {current_task.name}")
             _write_status(cfg.status_file, {
-                "current_stage": f"scout → new task: {current_task.name}",
+                "current_stage": f"pilot → new task: {current_task.name}",
                 "iteration": iteration + 1,
             })
 

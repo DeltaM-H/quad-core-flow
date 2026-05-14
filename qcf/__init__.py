@@ -2,13 +2,24 @@
 
 from .config import Config, load_config
 from .engine import QCFEngine
-from .models import Issue, ReviewOutput, AuditOutput, StageMetrics, RoundStageMetric, RoundsOverview
+from .models import (
+    ActionSuggestion,
+    Issue,
+    ReviewOutput,
+    AuditOutput,
+    StageMetrics,
+    RoundStageMetric,
+    RoundsOverview,
+)
+from .progress import AgentProgress
 from .runner import run_claude
 
 __all__ = [
     "Config", "load_config",
     "QCFEngine",
+    "ActionSuggestion",
     "Issue", "ReviewOutput", "AuditOutput",
     "StageMetrics", "RoundStageMetric", "RoundsOverview",
+    "AgentProgress",
     "run_claude",
 ]

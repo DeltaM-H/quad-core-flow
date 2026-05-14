@@ -2,9 +2,27 @@
 
 from __future__ import annotations
 
+import enum
 import re
 from dataclasses import dataclass, field
 from typing import Optional
+
+
+class ActionSuggestion(str, enum.Enum):
+    """REPLAN triggers evolution sandbox; RETRY continues inner loop."""
+    RETRY = "RETRY"
+    REPLAN = "REPLAN"
+
+    @classmethod
+    def default(cls) -> "ActionSuggestion":
+        return cls.RETRY
+
+    @classmethod
+    def parse(cls, text: str) -> "ActionSuggestion":
+        upper = text.strip().upper()
+        if "REPLAN" in upper:
+            return cls.REPLAN
+        return cls.RETRY
 
 
 @dataclass
@@ -38,6 +56,7 @@ class AuditOutput:
     result: str                     # PASS / FAIL
     summary: str
     vulnerabilities: list[Issue] = field(default_factory=list)
+    action_suggestion: str = "RETRY"  # RETRY | REPLAN
 
 
 @dataclass
@@ -112,6 +131,7 @@ class RoundsOverview:
 
 _REVIEW_PATTERN = re.compile(r"REVIEW_RESULT\s*:\s*(PASS|FAIL)", re.IGNORECASE)
 _AUDIT_PATTERN = re.compile(r"AUDIT_RESULT\s*:\s*(PASS|FAIL)", re.IGNORECASE)
+_ACTION_SUGGESTION_PATTERN = re.compile(r"ACTION_SUGGESTION\s*:\s*(RETRY|REPLAN)", re.IGNORECASE)
 
 
 def extract_review_result(text: str) -> tuple[Optional[str], str]:
@@ -128,3 +148,11 @@ def extract_audit_result(text: str) -> tuple[Optional[str], str]:
     lines = [l.strip() for l in text.strip().split("\n") if l.strip()]
     summary = lines[-1] if lines else ""
     return result, summary
+
+
+def extract_action_suggestion(text: str) -> str:
+    """Parse ACTION_SUGGESTION from audit output text. Returns 'RETRY' or 'REPLAN'."""
+    m = _ACTION_SUGGESTION_PATTERN.search(text)
+    if m:
+        return m.group(1).upper()
+    return "RETRY"

@@ -43,6 +43,8 @@ async def run_claude(
     model: str | None = None,
     allowed_tools: list[str] | None = None,
     output_format: str = "json",
+    max_output_tokens: int | None = None,
+    thinking_budget: int | None = None,
     cwd: Path | None = None,
 ) -> tuple[str, StageMetrics]:
     """Execute a Claude agent via the CLI, capturing its result.
@@ -67,6 +69,12 @@ async def run_claude(
 
     if model:
         cmd.extend(["--model", model])
+
+    if max_output_tokens:
+        cmd.extend(["--max-tokens", str(max_output_tokens)])
+
+    if thinking_budget:
+        cmd.extend(["--thinking-budget", str(thinking_budget)])
 
     if allowed_tools:
         cmd.append("--allowed-tools")

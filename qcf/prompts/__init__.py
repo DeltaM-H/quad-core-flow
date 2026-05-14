@@ -24,7 +24,9 @@ def render(template_name: str, **kwargs) -> str:
         - ``review.j2``
         - ``audit.j2``
         - ``tech-lead.j2``
-        - ``scout.j2``
+        - ``pilot.j2``
+        - ``evolver.j2``
+        - ``meta_audit.j2``
     """
     if not template_name.endswith(".j2"):
         template_name += ".j2"
@@ -63,32 +65,53 @@ def fix_prompt(*, design_doc_path: str | Path, issues_content: str) -> str:
                   issues_content=issues_content)
 
 
-def review_prompt(*, round_num: int, design_content: str, issues_file: str | Path) -> str:
+def review_prompt(*, round_num: int, design_doc_path: str, issues_file: str | Path) -> str:
     return render("review",
                   round_num=round_num,
-                  design_content=design_content,
+                  design_doc_path=design_doc_path,
                   issues_file=str(issues_file))
 
 
-def audit_prompt(*, round_num: int, design_content: str, issues_file: str | Path) -> str:
+def audit_prompt(*, round_num: int, design_doc_path: str, issues_file: str | Path) -> str:
     return render("audit",
                   round_num=round_num,
-                  design_content=design_content,
+                  design_doc_path=design_doc_path,
                   issues_file=str(issues_file))
 
 
-def tech_lead_prompt(*, task_description: str, design_doc_path: str | Path, project_tree_str: str = "") -> str:
+def tech_lead_prompt(*, task_description: str, design_doc_path: str | Path,
+                     project_tree_str: str = "",
+                     summary_pack: str = "") -> str:
     return render("tech-lead",
                   task_description=task_description,
                   design_doc_path=str(design_doc_path),
-                  project_tree=project_tree_str)
+                  project_tree=project_tree_str,
+                  summary_pack=summary_pack)
 
 
-def scout_prompt(*, project_tree_str: str = "", last_task: str = "",
+def pilot_prompt(*, project_tree_str: str = "", last_task: str = "",
                   round_history: list[str] | None = None,
                   task_output_path: str | Path = "") -> str:
-    return render("scout",
+    return render("pilot",
                   project_tree=project_tree_str,
                   last_task=last_task,
                   round_history=round_history or [],
                   task_output_path=str(task_output_path))
+
+
+def evolver_prompt(*, fail_logs: list[str], current_design: str,
+                   project_tree: str = "", audit_history: str = "",
+                   worktree_path: str = "") -> str:
+    return render("evolver",
+                  fail_logs=fail_logs,
+                  current_design=current_design,
+                  project_tree=project_tree,
+                  audit_history=audit_history,
+                  worktree_path=worktree_path)
+
+
+def meta_audit_prompt(*, current_design: str, diff: str, fail_logs: str) -> str:
+    return render("meta_audit",
+                  current_design=current_design,
+                  diff=diff,
+                  fail_logs=fail_logs)
