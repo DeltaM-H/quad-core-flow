@@ -20,7 +20,6 @@ def render(template_name: str, **kwargs) -> str:
 
     Available templates:
         - ``implement.j2``
-        - ``fix.j2``
         - ``review.j2``
         - ``audit.j2``
         - ``tech-lead.j2``
@@ -56,21 +55,11 @@ def project_tree(cwd: Path | None = None, max_depth: int = 3) -> str:
 
 
 def implement_prompt(*, design_doc_path: str | Path,
+                     issues_content: str | None = None,
                      scope_file_path: str | Path = "",
                      summary_file_path: str | Path = "",
                      brief_summary_path: str | Path = "") -> str:
     return render("implement",
-                  design_doc_path=str(design_doc_path),
-                  scope_file_path=str(scope_file_path),
-                  summary_file_path=str(summary_file_path),
-                  brief_summary_path=str(brief_summary_path))
-
-
-def fix_prompt(*, design_doc_path: str | Path, issues_content: str,
-               scope_file_path: str | Path = "",
-               summary_file_path: str | Path = "",
-               brief_summary_path: str | Path = "") -> str:
-    return render("fix",
                   design_doc_path=str(design_doc_path),
                   issues_content=issues_content,
                   scope_file_path=str(scope_file_path),
@@ -79,18 +68,22 @@ def fix_prompt(*, design_doc_path: str | Path, issues_content: str,
 
 
 def review_prompt(*, round_num: int, summary_file_path: str | Path,
+                  scope_file_path: str | Path,
                   issues_file: str | Path) -> str:
     return render("review",
                   round_num=round_num,
                   summary_file_path=str(summary_file_path),
+                  scope_file_path=str(scope_file_path),
                   issues_file=str(issues_file))
 
 
 def audit_prompt(*, round_num: int, scope_file_path: str | Path,
+                 summary_file_path: str | Path,
                  issues_file: str | Path) -> str:
     return render("audit",
                   round_num=round_num,
                   scope_file_path=str(scope_file_path),
+                  summary_file_path=str(summary_file_path),
                   issues_file=str(issues_file))
 
 

@@ -296,7 +296,7 @@ async def _run_fix(
     cfg.coder_dir.mkdir(parents=True, exist_ok=True)
     issues_content = _read_safe(cfg.issues_file) if cfg.issues_file.exists() else "(问题列表文件不存在)"
 
-    prompt_text = prompts.fix_prompt(
+    prompt_text = prompts.implement_prompt(
         design_doc_path=str(design_doc),
         issues_content=issues_content,
         scope_file_path=str(cfg.scope_file),
@@ -325,10 +325,12 @@ async def _run_review(
     cfg: Config,
     round_num: int,
     summary_file_path: Path,
+    scope_file_path: Path,
 ) -> ReviewOutput:
     prompt_text = prompts.review_prompt(
         round_num=round_num,
         summary_file_path=str(summary_file_path),
+        scope_file_path=str(scope_file_path),
         issues_file=str(cfg.review_issues_file),
     )
     log_path = cfg.log_dir / f"qcf-review-{round_num:02d}.log"
@@ -373,10 +375,12 @@ async def _run_audit(
     cfg: Config,
     round_num: int,
     scope_file_path: Path,
+    summary_file_path: Path,
 ) -> AuditOutput:
     prompt_text = prompts.audit_prompt(
         round_num=round_num,
         scope_file_path=str(scope_file_path),
+        summary_file_path=str(summary_file_path),
         issues_file=str(cfg.audit_issues_file),
     )
     log_path = cfg.log_dir / f"qcf-audit-{round_num:02d}.log"
@@ -888,9 +892,11 @@ class QCFEngine:
             })
 
             review_task = _run_review(cfg, round_num=round_num,
-                                       summary_file_path=cfg.summary_file)
+                                       summary_file_path=cfg.summary_file,
+                                       scope_file_path=cfg.scope_file)
             audit_task = _run_audit(cfg, round_num=round_num,
-                                     scope_file_path=cfg.scope_file)
+                                     scope_file_path=cfg.scope_file,
+                                     summary_file_path=cfg.summary_file)
             review, audit = await asyncio.gather(review_task, audit_task)
 
             last_review, last_audit = review, audit
