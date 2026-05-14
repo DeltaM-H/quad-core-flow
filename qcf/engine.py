@@ -782,13 +782,19 @@ class QCFEngine:
                 stage_name = "implement"
                 await self.hooks.run_async("pre-stage", stage=stage_name, round=round_num)
                 self.reporter.on_stage_start(round_num, max_rounds, stage_name)
-                progress.update_before_round(stage_name, round_num)
+                progress.update_before_round(stage_name, round_num,
+                    target=design_doc.stem.replace("-design", ""),
+                    tasks_done_summary=f"{len(self.overview.entries)} stages completed",
+                    next_action_hint=f"[Round {round_num}/{max_rounds}] Implementing code")
                 result_text, metrics = await _run_implement(cfg, design_doc, round_num)
             else:
                 stage_name = "fix"
                 await self.hooks.run_async("pre-stage", stage=stage_name, round=round_num)
                 self.reporter.on_stage_start(round_num, max_rounds, stage_name)
-                progress.update_before_round(stage_name, round_num)
+                progress.update_before_round(stage_name, round_num,
+                    target=design_doc.stem.replace("-design", ""),
+                    tasks_done_summary=f"{len(self.overview.entries)} stages completed",
+                    next_action_hint=f"[Round {round_num}/{max_rounds}] Fixing issues")
                 result_text, metrics = await _run_fix(cfg, design_doc, round_num)
 
             stage_result = "TIMEOUT" if metrics.timed_out else "PASS"
@@ -842,7 +848,10 @@ class QCFEngine:
             # ── Stage 2: Review + Audit (parallel) ──
             self.reporter.on_stage_start(round_num, max_rounds, "review")
             await self.hooks.run_async("pre-stage", stage="review+audit", round=round_num)
-            progress.update_before_round("review+audit", round_num)
+            progress.update_before_round("review+audit", round_num,
+                target=design_doc.stem.replace("-design", ""),
+                tasks_done_summary=f"{len(self.overview.entries)} stages completed",
+                next_action_hint=f"[Round {round_num}/{max_rounds}] Reviewing + auditing")
             _write_status(cfg.status_file, {
                 "current_round": round_num,
                 "current_stage": "reviewing + auditing",

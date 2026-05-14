@@ -61,13 +61,26 @@ class AgentProgress:
         }
         self._write()
 
-    def update_before_round(self, stage: str, round_num: int, target: str = "") -> None:
-        """Called by engine before each stage starts."""
+    def update_before_round(self, stage: str, round_num: int, *,
+                            target: str = "",
+                            tasks_done_summary: str = "",
+                            next_action_hint: str = "") -> None:
+        """Called by engine before each stage starts — always updates Target/Tasks Done/Next Action."""
         self.data["current_stage"] = stage
         self.data["round"] = round_num
-        self.data["next_action"] = f"Running {stage} for round {round_num}"
+
         if target:
             self.data["target"] = target
+
+        if tasks_done_summary:
+            self.data["tasks_done_summary"] = tasks_done_summary
+
+        # Build a descriptive next_action if none provided
+        if next_action_hint:
+            self.data["next_action"] = next_action_hint
+        else:
+            self.data["next_action"] = f"[Round {round_num}] {stage}"
+
         self.data["updated_at"] = _now_iso()
         self._write()
 
