@@ -71,7 +71,8 @@ async def run_claude(
         cmd.extend(["--model", model])
 
     if max_output_tokens:
-        cmd.extend(["--max-tokens", str(max_output_tokens)])
+        # NOTE: current Claude Code CLI does not support --max-tokens
+        pass
 
     if thinking_budget:
         cmd.extend(["--thinking-budget", str(thinking_budget)])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Optional
@@ -49,6 +50,7 @@ class ReviewOutput:
     result: str                     # PASS / FAIL
     summary: str
     issues: list[Issue] = field(default_factory=list)
+    summary_feedback: str | None = None  # SUMMARY_FEEDBACK from review (if summary insufficient)
 
 
 @dataclass
@@ -148,6 +150,38 @@ def extract_audit_result(text: str) -> tuple[Optional[str], str]:
     lines = [l.strip() for l in text.strip().split("\n") if l.strip()]
     summary = lines[-1] if lines else ""
     return result, summary
+
+
+@dataclass
+class ScopeOutput:
+    """Stage artifact: records implementation scope boundaries."""
+    changed_files: list[str] = field(default_factory=list)
+    dependencies: list[str] = field(default_factory=list)
+    out_of_scope: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_file(cls, path: Path) -> "ScopeOutput":
+        """Parse scope.json written by the implement stage."""
+        if not path.exists():
+            return cls()
+        try:
+            data = json.loads(path.read_text("utf-8", errors="replace"))
+            return cls(
+                changed_files=data.get("changed_files", []),
+                dependencies=data.get("dependencies", []),
+                out_of_scope=data.get("out_of_scope", []),
+            )
+        except (json.JSONDecodeError, Exception):
+            return cls()
+
+
+_SUMMARY_FEEDBACK_PATTERN = re.compile(r"SUMMARY_FEEDBACK\s*:\s*(.+)", re.IGNORECASE)
+
+
+def extract_summary_feedback(text: str) -> str | None:
+    """Parse SUMMARY_FEEDBACK from review output. Returns feedback text or None."""
+    m = _SUMMARY_FEEDBACK_PATTERN.search(text)
+    return m.group(1).strip() if m else None
 
 
 def extract_action_suggestion(text: str) -> str:

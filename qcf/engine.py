@@ -137,8 +137,12 @@ async def _run_implement(
         "current_round": round_num,
         "current_stage": "implement (running)",
     })
+    cfg.coder_dir.mkdir(parents=True, exist_ok=True)
     prompt_text = prompts.implement_prompt(
         design_doc_path=str(design_doc),
+        scope_file_path=str(cfg.scope_file),
+        summary_file_path=str(cfg.summary_file),
+        brief_summary_path=str(cfg.coder_dir / f"{design_doc.stem}-round-{round_num:02d}-summary.md"),
     )
     log_path = cfg.log_dir / f"qcf-implement-{round_num:02d}.log"
     result_text, metrics = await run_claude(
@@ -155,6 +159,19 @@ async def _run_implement(
         "current_round": round_num,
         "current_stage": f"implement ({'TIMEOUT' if metrics.timed_out else 'PASS'})",
     })
+    # Validate stage artifacts
+    if not metrics.timed_out:
+        if cfg.scope_file.exists():
+            print(f"     → scope.json written ({_read_safe(cfg.scope_file)[:100]}...)")
+        else:
+            print("     → warning: scope.json not found")
+        if cfg.summary_file.exists():
+            print(f"     → summary.md written ({len(_read_safe(cfg.summary_file))} chars)")
+        else:
+            print("     → warning: summary.md not found")
+        brief_path = cfg.coder_dir / f"{design_doc.stem}-round-{round_num:02d}-summary.md"
+        if brief_path.exists():
+            print(f"     → brief summary: {brief_path}")
     return result_text, metrics
 
 
@@ -276,11 +293,15 @@ async def _run_fix(
         "current_stage": "fix (running)",
     })
 
+    cfg.coder_dir.mkdir(parents=True, exist_ok=True)
     issues_content = _read_safe(cfg.issues_file) if cfg.issues_file.exists() else "(问题列表文件不存在)"
 
     prompt_text = prompts.fix_prompt(
         design_doc_path=str(design_doc),
         issues_content=issues_content,
+        scope_file_path=str(cfg.scope_file),
+        summary_file_path=str(cfg.summary_file),
+        brief_summary_path=str(cfg.coder_dir / f"{design_doc.stem}-round-{round_num:02d}-summary.md"),
     )
     log_path = cfg.log_dir / f"qcf-fix-{round_num:02d}.log"
     result_text, metrics = await run_claude(
@@ -302,12 +323,12 @@ async def _run_fix(
 
 async def _run_review(
     cfg: Config,
-    design_doc: Path,
     round_num: int,
+    summary_file_path: Path,
 ) -> ReviewOutput:
     prompt_text = prompts.review_prompt(
         round_num=round_num,
-        design_doc_path=str(design_doc),
+        summary_file_path=str(summary_file_path),
         issues_file=str(cfg.review_issues_file),
     )
     log_path = cfg.log_dir / f"qcf-review-{round_num:02d}.log"
@@ -334,21 +355,28 @@ async def _run_review(
             if issue:
                 issues.append(issue)
 
+    from .models import extract_summary_feedback
+
+    summary_feedback = extract_summary_feedback(result_text)
+    if summary_feedback:
+        print(f"     → SUMMARY_FEEDBACK: {summary_feedback[:120]}")
+
     colored_res = _color_result(result) + (_red(" | TIMEOUT") if metrics.timed_out else "")
     print(f"  ⚡ Review: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
     print(f"     ↳ {summary[:120]}")
 
-    return ReviewOutput(result=result, summary=summary, issues=issues)
+    return ReviewOutput(result=result, summary=summary, issues=issues,
+                         summary_feedback=summary_feedback)
 
 
 async def _run_audit(
     cfg: Config,
-    design_doc: Path,
     round_num: int,
+    scope_file_path: Path,
 ) -> AuditOutput:
     prompt_text = prompts.audit_prompt(
         round_num=round_num,
-        design_doc_path=str(design_doc),
+        scope_file_path=str(scope_file_path),
         issues_file=str(cfg.audit_issues_file),
     )
     log_path = cfg.log_dir / f"qcf-audit-{round_num:02d}.log"
@@ -859,8 +887,10 @@ class QCFEngine:
                 "final_result": None,
             })
 
-            review_task = _run_review(cfg, design_doc, round_num)
-            audit_task = _run_audit(cfg, design_doc, round_num)
+            review_task = _run_review(cfg, round_num=round_num,
+                                       summary_file_path=cfg.summary_file)
+            audit_task = _run_audit(cfg, round_num=round_num,
+                                     scope_file_path=cfg.scope_file)
             review, audit = await asyncio.gather(review_task, audit_task)
 
             last_review, last_audit = review, audit
@@ -868,6 +898,10 @@ class QCFEngine:
             print(f"[QCF] stage: review → {review.result}")
             print(f"[QCF] stage: audit → {audit.result}")
             print(f"[QCF] action_suggestion → {audit.action_suggestion}")
+
+            # Summary feedback tracking
+            if review.summary_feedback:
+                print(f"[QCF] summary_feedback → {review.summary_feedback[:200]}")
 
             self.overview.add(RoundStageMetric(
                 stage="review", result=review.result, summary=review.summary,

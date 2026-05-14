@@ -1,8 +1,41 @@
 请读取设计文档 {{ design_doc_path }}，根据设计实现对应的代码。
 
-要求：
+## 范围限定
 1. 先仔细阅读设计文档，理解完整需求
 2. 在项目对应位置实现代码
-3. 请不要修改本次需求不相关的任何文件
+3. 不要修改本次需求不相关的任何文件
+
+## 产出要求
+
+实现完成后，你必须产出以下文件：
+
+### 1. 范围文件 scope.json → {{ scope_file_path }}
+
+记录本次实现的范围边界：
+
+```json
+{
+  "changed_files": ["path/to/file1.py", "path/to/file2.py"],
+  "dependencies": ["dependent-module-A", "dependent-module-B"],
+  "out_of_scope": ["path/to/related-but-not-modified.py"]
+}
+```
+
+- `changed_files`: 所有新增或修改的文件（相对于项目根目录）
+- `dependencies`: 本次实现依赖的外部模块或接口（仅列本次新增的依赖关系）
+- `out_of_scope`: 与本次需求相关但明确未修改的文件
+
+### 2. 详细摘要 summary.md → {{ summary_file_path }}
+
+用于 Code Reviewer 审查，内容包含：
+1. **接口签名**：修改/新增的函数签名、类签名、参数和返回值
+2. **关键决策理由**：为什么选择这个方案而不是其他方案
+3. **核心数据流**：数据如何流转，关键路径
+
+不要粘贴完整的代码实现，保持简洁，重点突出设计层面的信息。
+
+### 3. 简略摘要 → {{ brief_summary_path }}
+
+用于永久记录，只需 3-5 行简要说明本次修改了什么、为什么、涉及哪些文件。
 
 请开始实现。

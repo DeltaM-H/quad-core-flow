@@ -55,27 +55,42 @@ def project_tree(cwd: Path | None = None, max_depth: int = 3) -> str:
         return "(unable to generate tree)"
 
 
-def implement_prompt(*, design_doc_path: str | Path) -> str:
-    return render("implement", design_doc_path=str(design_doc_path))
+def implement_prompt(*, design_doc_path: str | Path,
+                     scope_file_path: str | Path = "",
+                     summary_file_path: str | Path = "",
+                     brief_summary_path: str | Path = "") -> str:
+    return render("implement",
+                  design_doc_path=str(design_doc_path),
+                  scope_file_path=str(scope_file_path),
+                  summary_file_path=str(summary_file_path),
+                  brief_summary_path=str(brief_summary_path))
 
 
-def fix_prompt(*, design_doc_path: str | Path, issues_content: str) -> str:
+def fix_prompt(*, design_doc_path: str | Path, issues_content: str,
+               scope_file_path: str | Path = "",
+               summary_file_path: str | Path = "",
+               brief_summary_path: str | Path = "") -> str:
     return render("fix",
                   design_doc_path=str(design_doc_path),
-                  issues_content=issues_content)
+                  issues_content=issues_content,
+                  scope_file_path=str(scope_file_path),
+                  summary_file_path=str(summary_file_path),
+                  brief_summary_path=str(brief_summary_path))
 
 
-def review_prompt(*, round_num: int, design_doc_path: str, issues_file: str | Path) -> str:
+def review_prompt(*, round_num: int, summary_file_path: str | Path,
+                  issues_file: str | Path) -> str:
     return render("review",
                   round_num=round_num,
-                  design_doc_path=design_doc_path,
+                  summary_file_path=str(summary_file_path),
                   issues_file=str(issues_file))
 
 
-def audit_prompt(*, round_num: int, design_doc_path: str, issues_file: str | Path) -> str:
+def audit_prompt(*, round_num: int, scope_file_path: str | Path,
+                 issues_file: str | Path) -> str:
     return render("audit",
                   round_num=round_num,
-                  design_doc_path=design_doc_path,
+                  scope_file_path=str(scope_file_path),
                   issues_file=str(issues_file))
 
 

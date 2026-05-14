@@ -53,6 +53,11 @@ class Config:
     audit_issues_file: Path = Path("/tmp/qcf-audit-issues.txt")
     pilot_task_file: Path = Path("/tmp/qcf-pilot-task.txt")
 
+    # ── Stage artifacts (per-round, written by implement, read by review/audit) ──
+    scope_file: Path = Path("/tmp/qcf-scope.json")              # {changed_files, dependencies, out_of_scope}
+    summary_file: Path = Path("/tmp/qcf-summary.md")            # detailed summary (read by reviewer)
+    # brief_summary_file is computed in engine as coder_dir/round-{n:02d}-summary.md
+
     # ── Stage timeouts (seconds) ──
     max_rounds: int = 3
     tech_lead_timeout: int = 300
@@ -225,7 +230,8 @@ class Config:
         # Files
         files = data.get("files", {})
         for key, attr in (("issues", "issues_file"), ("review_issues", "review_issues_file"),
-                          ("audit_issues", "audit_issues_file")):
+                          ("audit_issues", "audit_issues_file"),
+                          ("scope", "scope_file"), ("summary", "summary_file")):
             if key in files:
                 setattr(cfg, attr, Path(files[key]))
 
@@ -302,7 +308,8 @@ class Config:
                           "coder_dir", "out_review_dir", "out_audit_dir", "fail_dir",
                           "task_dir",
                           "issues_file", "review_issues_file", "audit_issues_file",
-                          "pilot_task_file", "summary_pack_file"):
+                          "pilot_task_file", "summary_pack_file",
+                          "scope_file", "summary_file"):
             val: Path = getattr(self, attr_name)
             if not val.is_absolute():
                 setattr(self, attr_name, anchor / val)

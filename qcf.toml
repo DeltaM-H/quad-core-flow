@@ -31,6 +31,8 @@
 # issues = "/tmp/qcf-issues-latest.txt"
 # review_issues = "/tmp/qcf-review-issues.txt"
 # audit_issues = "/tmp/qcf-audit-issues.txt"
+# scope = "/tmp/qcf-scope.json"  # changed_files, dependencies, out_of_scope (written by implement)
+# summary = "/tmp/qcf-summary.md" # detailed summary for reviewer (written by implement)
 
 [commit]
 # enabled = true
