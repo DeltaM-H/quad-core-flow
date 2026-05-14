@@ -110,6 +110,14 @@ async def run_evolution(
                 _merge_worktree(cfg.root_dir, branch, worktree_path)
             else:
                 _commit_in_place(cfg, branch)
+
+            # Bump version to mark a successful evolution
+            new_version = _bump_version(cfg.root_dir)
+            if new_version:
+                print(f"  Version bumped to {new_version}")
+            else:
+                print("  (version bump skipped)")
+
             print("  Evolution completed successfully.")
             return True
         else:
@@ -355,3 +363,62 @@ def _save_rejection_report(cfg: Config, diff: str, meta_audit_result: str) -> No
     report_path.write_text(report_content)
     os.chmod(report_path, 0o600)
     print(f"  Rejection report: {report_path}")
+
+
+def _bump_version(repo_path: Path) -> str | None:
+    """Bump the patch version in pyproject.toml and setup.py.
+
+    Reads the current version, increments the patch segment (X.Y.Z → X.Y.Z+1),
+    writes both files, and creates a git commit.
+    """
+    import re
+
+    pyproject = repo_path / "pyproject.toml"
+    setup_py = repo_path / "setup.py"
+
+    if not pyproject.exists():
+        return None
+
+    # ── Read current version ──
+    content = pyproject.read_text("utf-8")
+    m = re.search(r'version\s*=\s*"(\d+)\.(\d+)\.(\d+)"', content)
+    if not m:
+        return None
+
+    major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    new_version = f"{major}.{minor}.{patch + 1}"
+
+    # ── Update pyproject.toml ──
+    updated = re.sub(
+        r'(version\s*=\s*)"\d+\.\d+\.\d+"',
+        lambda mo: f'{mo.group(1)}"{new_version}"',
+        content,
+    )
+    pyproject.write_text(updated)
+
+    # ── Update setup.py ──
+    if setup_py.exists():
+        setup_content = setup_py.read_text("utf-8")
+        updated_setup = re.sub(
+            r'(version\s*=\s*)"\d+\.\d+\.\d+"',
+            lambda mo: f'{mo.group(1)}"{new_version}"',
+            setup_content,
+        )
+        setup_py.write_text(updated_setup)
+
+    # ── Git commit ──
+    for f in [pyproject, setup_py]:
+        if f.exists():
+            subprocess.run(
+                ["git", "add", str(f.relative_to(repo_path))],
+                capture_output=True, timeout=15, cwd=str(repo_path),
+            )
+
+    subprocess.run(
+        ["git", "commit", "-m",
+         f"chore(qcf): bump version to {new_version}",
+         "--allow-empty"],
+        capture_output=True, timeout=30, cwd=str(repo_path),
+    )
+
+    return new_version
