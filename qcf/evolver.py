@@ -23,9 +23,6 @@ from . import worktree as wt
 
 logger = logging.getLogger(__name__)
 
-_EVOLVE_REPORT_DIR = Path("output/docs/qcf")
-
-
 async def run_evolution(
     cfg: Config,
     fail_logs: list[str],
@@ -287,7 +284,7 @@ def _commit_in_place(cfg: Config, branch: str) -> None:
     """Commit evolution changes when running in-place."""
     import subprocess
 
-    ret = subprocess.run(["git", "add", "-u"], capture_output=True, timeout=15,
+    ret = subprocess.run(["git", "add", "-A"], capture_output=True, timeout=15,
                          cwd=str(cfg.root_dir))
     if ret.returncode != 0:
         return
@@ -308,7 +305,7 @@ def _commit_in_place(cfg: Config, branch: str) -> None:
 
 def _save_rejection_report(cfg: Config, diff: str, meta_audit_result: str) -> None:
     """Save a detailed rejection report when Meta-Audit fails."""
-    report_dir = cfg.docs_dir / _EVOLVE_REPORT_DIR
+    report_dir = cfg.docs_dir / "qcf"
     report_dir.mkdir(parents=True, exist_ok=True)
 
     report_path = report_dir / f"evolution-rejected-{time.strftime('%Y%m%d-%H%M%S')}.md"
