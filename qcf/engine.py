@@ -400,7 +400,7 @@ def _auto_commit(cfg: Config, round_num: int, stage_name: str = "implement") -> 
     if stage_name == "tech-lead":
         ret = _git(["git", "add", cfg.tech_lead_dir.name + "/"], cwd=cfg.root_dir)
     else:
-        ret = _git(["git", "add", "-u"], cwd=cfg.root_dir)
+        ret = _git(["git", "add", "-A"], cwd=cfg.root_dir)
     if ret != 0:
         print("  → git add failed, skipping commit")
         return
