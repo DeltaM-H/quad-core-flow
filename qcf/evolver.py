@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -71,7 +72,13 @@ async def run_evolution(
         else:
             _commit_in_place(cfg, branch)
 
-        # ── Step 5: Get diff for Meta-Audit ──
+        # ── Step 5: Smoke test — verify modified code is importable ──
+        if not await _run_smoke_test(worktree_path):
+            print("  [Evolution] Smoke test FAILED — aborting")
+            _save_rejection_report(cfg, "(smoke test failed before diff)", "SMOKE_FAIL")
+            return False
+
+        # ── Step 6: Get diff for Meta-Audit ──
         if not in_place:
             diff = wt.diff_between("HEAD", branch, cfg.root_dir)
         else:
@@ -150,6 +157,36 @@ async def _run_evolver_agent(
 
     print(f"  [Evolver] done — {metrics.input_tokens} in / {metrics.output_tokens} out")
     return True
+
+
+async def _run_smoke_test(worktree_path: Path) -> bool:
+    """Verify modified QCF code is at least importable and syntactically correct."""
+    try:
+        # Syntax check all qcf/*.py
+        result = subprocess.run(
+            ["python3", "-m", "compileall", "-q", "qcf/"],
+            capture_output=True, text=True, timeout=30,
+            cwd=str(worktree_path),
+        )
+        if result.returncode != 0:
+            print(f"  [SmokeTest] compileall FAILED:\n{result.stderr.strip()[:500]}")
+            return False
+
+        # Import check
+        result = subprocess.run(
+            ["python3", "-c", "import qcf"],
+            capture_output=True, text=True, timeout=30,
+            cwd=str(worktree_path),
+        )
+        if result.returncode != 0:
+            print(f"  [SmokeTest] import FAILED:\n{result.stderr.strip()[:500]}")
+            return False
+
+        print("  [SmokeTest] PASS — compile + import OK")
+        return True
+    except (OSError, subprocess.TimeoutError) as e:
+        print(f"  [SmokeTest] error: {e}")
+        return False
 
 
 def _commit_worktree_changes(worktree_path: Path, branch: str) -> bool:
