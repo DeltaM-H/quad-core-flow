@@ -14,6 +14,7 @@ from pathlib import Path
 from .config import Config, write_default_config
 from .engine import QCFEngine
 from .watch import watch_mode
+from . import worktree as wt
 
 _PID_FILE = Path("/tmp/qcf-pid.txt")
 
@@ -131,8 +132,11 @@ def _cmd_run(args: argparse.Namespace) -> None:
         return
 
     engine = QCFEngine(cfg)
-    success = asyncio.run(engine.run(design_doc, max_rounds=max_rounds, start_stage=start_stage))
-    sys.exit(0 if success else 1)
+    result = asyncio.run(engine.run(
+        design_doc, max_rounds=max_rounds,
+        start_stage=start_stage, no_commit=args.no_commit,
+    ))
+    sys.exit(0 if result == "PASS" else 1)
 
 
 def _run_detached(design_doc: Path, max_rounds: int, start_stage: str, config_path: str | None) -> None:
@@ -165,7 +169,7 @@ def _run_detached(design_doc: Path, max_rounds: int, start_stage: str, config_pa
 
 
 def _cmd_auto(args: argparse.Namespace) -> None:
-    """Quad-Core Flow: Tech-Lead → implementing → review → security (+ Scout if continuous)."""
+    """Quad-Core Flow: Tech-Lead → implementing → review → security (+ Pilot if continuous)."""
     cfg = Config.load(args.config, cwd=Path.cwd())
     task_path = Path(args.task)
 
@@ -387,37 +391,68 @@ def _cmd_config(args: argparse.Namespace) -> None:
 
 
 def _cmd_status(args: argparse.Namespace) -> None:
+    from .progress import AGENT_PROGRESS_PATH
+
     status_file = Config.load(args.config, cwd=Path.cwd()).status_file
 
-    if not status_file.exists():
+    # Also try AGENT_PROGRESS.json for richer display
+    agent_data = None
+    if AGENT_PROGRESS_PATH.exists():
+        try:
+            agent_data = json.loads(AGENT_PROGRESS_PATH.read_text())
+        except (json.JSONDecodeError, Exception):
+            pass
+
+    if args.watch:
+        # Watch both files
+        _watch_status(status_file)
+        return
+
+    # One-shot display from qcf-status.json
+    if status_file.exists():
+        data = json.loads(status_file.read_text())
+        print(_format_status(data, agent_data))
+    elif agent_data:
+        # Fallback to AGENT_PROGRESS.json
+        print(_format_agent_status(agent_data))
+    else:
         print(f"No QCF status found ({status_file})")
         print("Start a QCF run first with: qcf run <design-doc>")
         sys.exit(1)
 
-    if args.watch:
-        _watch_status(status_file)
-        return
-
-    # One-shot display
-    data = json.loads(status_file.read_text())
-    print(_format_status(data))
-
 
 def _watch_status(path: Path) -> None:
     """Continuously monitor the status file for changes."""
+    from .progress import AGENT_PROGRESS_PATH
+
     last_content = ""
+    last_agent_content = ""
     try:
         while True:
+            # Read both status files
+            agent_data = None
+            if AGENT_PROGRESS_PATH.exists():
+                agent_content = AGENT_PROGRESS_PATH.read_text()
+                if agent_content != last_agent_content:
+                    last_agent_content = agent_content
+                    try:
+                        agent_data = json.loads(agent_content)
+                    except (json.JSONDecodeError, Exception):
+                        pass
+
             if path.exists():
                 content = path.read_text()
-                if content != last_content:
+                if content != last_content or agent_data:
                     last_content = content
                     try:
                         data = json.loads(content)
                         os.system("clear")
-                        print(_format_status(data))
+                        print(_format_status(data, agent_data))
                     except (json.JSONDecodeError, Exception):
                         print(f"[{time.strftime('%H:%M:%S')}] (status file updating...)")
+            elif agent_data:
+                os.system("clear")
+                print(_format_agent_status(agent_data))
             else:
                 os.system("clear")
                 print(f"Pipeline status file not found: {path}")
@@ -428,7 +463,53 @@ def _watch_status(path: Path) -> None:
         print("\nStatus watch stopped.")
 
 
-def _format_status(data: dict) -> str:
+def _format_agent_status(data: dict) -> str:
+    """Format AGENT_PROGRESS.json for display."""
+    _G = "\033[32m"
+    _R = "\033[31m"
+    _B = "\033[1m"
+    _X = "\033[0m"
+
+    lines = []
+    lines.append(f"{_B}{'=' * 50}{_X}")
+    lines.append(f"  {_B}⚡ Quad-Core Flow — Dashboard{_X}")
+    lines.append(f"{_B}{'=' * 50}{_X}")
+    lines.append(f"  Target:    {data.get('target', 'N/A')}")
+    lines.append(f"  Stage:     {data.get('current_stage', 'N/A')}")
+    lines.append(f"  Round:     {data.get('round', 'N/A')}/{data.get('max_rounds', 'N/A')}")
+    lines.append(f"  Next:      {data.get('next_action', 'N/A')}")
+
+    action = data.get('action_suggestion', 'RETRY')
+    colored_action = f"{_R}REPLAN{_X}" if action == "REPLAN" else f"{_G}RETRY{_X}"
+    lines.append(f"  Suggestion:{colored_action}")
+
+    failed = data.get('failed_stages', [])
+    if failed:
+        lines.append(f"  Failed:    {_R}{', '.join(failed)}{_X}")
+
+    tasks_done = data.get('tasks_done', [])
+    if tasks_done:
+        lines.append(f"  {'─' * 48}")
+        for t in tasks_done[-5:]:
+            lines.append(f"    ✓ {t}")
+
+    history = data.get('history', [])
+    if history:
+        lines.append(f"  {'─' * 48}")
+        for h in history[-8:]:
+            stage = h.get('stage', '?')
+            result = h.get('result', '?')
+            rnd = h.get('round', '?')
+            icon = {"PASS": "✓", "FAIL": "✗", "TIMEOUT": "⏱", "SKIP": "→", "REPLAN": "⛔"}.get(result, "?")
+            colored = _G if result == "PASS" else (_R if result in ("FAIL", "TIMEOUT", "REPLAN") else "")
+            reset = _X if colored else ""
+            lines.append(f"  {colored}{icon}{reset} round-{rnd} {stage:<15s} {colored}{result}{reset}")
+
+    lines.append(f"{_B}{'=' * 50}{_X}")
+    return "\n".join(lines)
+
+
+def _format_status(data: dict, agent_data: dict | None = None) -> str:
     _G = "\033[32m"  # green
     _R = "\033[31m"  # red
     _B = "\033[1m"   # bold
@@ -503,6 +584,55 @@ def _get_version_string() -> str:
     return f"qcf {v}"
 
 
+async def _cmd_evolve(args: argparse.Namespace) -> None:
+    """Manually trigger the evolution workflow."""
+    from .evolver import run_evolution
+
+    cfg = Config.load(args.config, cwd=Path.cwd())
+    task_desc = args.task or "manual evolution trigger"
+
+    # Collect fail logs if available
+    fail_logs: list[str] = []
+    if cfg.fail_dir.exists():
+        for f in sorted(cfg.fail_dir.glob("*-fail-report-*.md"))[-5:]:
+            fail_logs.append(f.read_text("utf-8", errors="replace"))
+
+    design_content = ""
+    if cfg.tech_lead_dir.exists():
+        designs = sorted(cfg.tech_lead_dir.glob("*-design.md"))
+        if designs:
+            design_content = designs[-1].read_text("utf-8", errors="replace")
+
+    print(f"Evolution task: {task_desc}")
+    success = await run_evolution(cfg, fail_logs, design_content)
+    sys.exit(0 if success else 1)
+
+
+def _cmd_worktree(args: argparse.Namespace) -> None:
+    """Manage git worktrees."""
+    if args.wt_action == "list":
+        worktrees = wt.list_worktrees()
+        if not worktrees:
+            print("No active worktrees.")
+            return
+        print(f"Active worktrees ({len(worktrees)}):")
+        for wt_info in worktrees:
+            branch = wt_info.get("branch", "(detached)")
+            bare = " [bare]" if wt_info.get("bare") else ""
+            print(f"  {wt_info['path']:50s} {branch}{bare}")
+
+    elif args.wt_action == "remove":
+        path = Path(args.path)
+        if not path.exists():
+            print(f"Worktree not found: {path}")
+            sys.exit(1)
+        if wt.remove_worktree(path):
+            print(f"Worktree removed: {path}")
+        else:
+            print(f"Failed to remove worktree: {path}")
+            sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="qcf",
@@ -533,6 +663,8 @@ def main() -> None:
     p_run.add_argument("--start-stage", "-s",
                        choices=["implement", "fix"],
                        help="Override starting stage detection")
+    p_run.add_argument("--no-commit", action="store_true",
+                       help="Disable auto-commit for debugging")
     p_run.add_argument("--detach", "-d", action="store_true",
                        help="Run in background; poll /tmp/qcf-status.json for progress")
 
@@ -540,7 +672,7 @@ def main() -> None:
     p_auto = sub.add_parser("auto", help="Quad-Core Flow: tech-lead → coder → review → security")
     p_auto.add_argument("task", help="High-level task description (.md)")
     p_auto.add_argument("--continuous", "-c", action="store_true",
-                        help="After completion, scout for new tasks and continue iterating")
+                        help="After completion, pilot for new tasks and continue iterating")
     p_auto.add_argument("--max-rounds", "-r", type=int, default=0,
                         help="Override max rounds from config")
     p_auto.add_argument("--detach", "-d", action="store_true",
@@ -571,6 +703,18 @@ def main() -> None:
     p_config.add_argument("--config-file", "-c",
                            help="Path to qcf.toml (default: CWD/qcf.toml)")
 
+    # evolve
+    p_evolve = sub.add_parser("evolve", help="Manually trigger evolution workflow")
+    p_evolve.add_argument("task", nargs="?", default="",
+                           help="Optional task description for the evolution")
+
+    # worktree
+    p_worktree = sub.add_parser("worktree", help="Manage git worktrees")
+    p_wt_sub = p_worktree.add_subparsers(dest="wt_action", required=True)
+    p_wt_list = p_wt_sub.add_parser("list", help="List active worktrees")
+    p_wt_remove = p_wt_sub.add_parser("remove", help="Remove a worktree")
+    p_wt_remove.add_argument("path", help="Path to the worktree to remove")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -587,6 +731,10 @@ def main() -> None:
         _cmd_stop(args)
     elif args.command == "config":
         _cmd_config(args)
+    elif args.command == "evolve":
+        asyncio.run(_cmd_evolve(args))
+    elif args.command == "worktree":
+        _cmd_worktree(args)
     elif args.command == "version":
         _cmd_version(args)
 

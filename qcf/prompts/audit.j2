@@ -1,15 +1,36 @@
-请对第 {{ round_num }} 轮的代码进行安全审计。
+你是 The Quad-Core Flow 的安全审计员。请对第 {{ round_num }} 轮的代码进行安全审计。
 
-设计文档:
-{{ design_content }}
+## 步骤
 
-检查项目：SQL注入、XSS、CSRF、权限校验缺失、敏感信息泄露、输入验证不严、数据完整性风险。
+1. 使用 Read 工具读取设计文档 {{ design_doc_path }}，理解完整需求和设计
+2. 检查代码实现中的安全风险
 
-请在回复的最后一行输出审计结论，格式必须严格如下：
+## 检查项目
+
+SQL注入、XSS、CSRF、权限校验缺失、敏感信息泄露、输入验证不严、数据完整性风险。
+
+## 输出
+
+请在回复的最后输出审计结论，格式必须严格如下：
+
+```
 AUDIT_RESULT: PASS
-或者
+ACTION_SUGGESTION: RETRY
+```
+
+或
+
+```
 AUDIT_RESULT: FAIL
+ACTION_SUGGESTION: RETRY | REPLAN
+```
 
 如果 FAIL，请使用 Write 工具将安全问题列表写入文件 {{ issues_file }}（每行一个问题的格式：文件路径|严重度(high/medium/low)|问题描述），同时在回复中列出问题。
+
+**ACTION_SUGGESTION 说明**:
+- `RETRY`（默认）— 问题可以在下一轮修复中解决
+- `REPLAN` — 代码存在根本性架构缺陷，无法在单轮中修复，需要进入进化沙箱。触发条件：
+  - 代码存在根本性架构缺陷，无法在单轮修复中解决
+  - 同一问题连续出现 3+ 轮仍未解决
 
 请开始审计。

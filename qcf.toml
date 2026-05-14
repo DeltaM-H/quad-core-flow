@@ -1,29 +1,61 @@
+# qcf 默认配置
+# 在项目根目录放置 qcf.toml 覆盖这些值
+
 [workspace]
-docs_dir = "output/docs"
-status_file = "/tmp/qcf-status.json"
-log_dir = "/tmp"
+# docs_dir = "output/docs"
+# status_file = "/tmp/qcf-status.json"
+# log_dir = "/tmp"
 
 [stages]
-max_rounds = 3
-implement_timeout = 600
-fix_timeout = 600
-review_timeout = 450
-audit_timeout = 300
-scout_timeout = 180
+# max_rounds = 3
+# implement_timeout = 600
+# fix_timeout = 600
+# review_timeout = 300
+# audit_timeout = 300
 
 [models]
-review = "opus"
-audit = ""
+# review = "opus"
+# audit = ""
+
+[paths]
+# 所有路径相对于 workspace.docs_dir，除非是绝对路径
+# tech_lead = "tech-lead"
+# code_reviewer = "code-reviewer"
+# security_reviewer = "security-reviewer"
+# coder = "coder"
+# out_review = "code-reviewer"
+# out_audit = "security-reviewer"
+# fail = "qcf"
+
+[files]
+# issues = "/tmp/qcf-issues-latest.txt"
+# review_issues = "/tmp/qcf-review-issues.txt"
+# audit_issues = "/tmp/qcf-audit-issues.txt"
 
 [commit]
-enabled = false
+# enabled = true
+# message_template = "feat(pipeline): round-{round_num:02d} all checks passed"
+# co_author = "Claude Opus 4.7 <noreply@anthropic.com>"
 
 [claude]
-allowed_tools = ["Write", "Read", "Edit", "Bash"]
-output_format = "json"
+# allowed_tools = ["Write", "Read", "Edit", "Bash"]
+# output_format = "json"
 
 [hooks]
-# 这些命令在每个事件点执行，通过 QCF_* 环境变量获取上下文
-# post-start = ["echo 'QCF started: doc=$QCF_DESIGN_DOC'"]
-# on-passed = ["echo '[inline-hook] Passed round $QCF_ROUND'"]
-# on-failed = ["echo '[inline-hook] Failed: $QCF_FAILED_STAGES'"]
+# Shell commands executed at pipeline lifecycle events.
+# Each command receives QCF_* env vars for context.
+# Available events: post-start, pre-stage, post-stage, post-round,
+#                   on-passed, on-failed, on-exhausted
+# post-start = ["echo 'started: doc=$QCF_DESIGN_DOC'"]
+# on-passed = ["notify-send 'Pipeline passed'"]
+#
+# Alternatively, place executable scripts in .qcf-hooks/<event>/
+# (git-hooks style) for more complex logic.
+
+[evolution]
+# Self-evolution sandbox settings
+# enabled = true
+# worktree_base = "../evolve"
+# evolve_timeout = 600
+# meta_audit_timeout = 300
+# max_consecutive_fails = 3

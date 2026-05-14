@@ -51,7 +51,7 @@ class Config:
     issues_file: Path = Path("/tmp/qcf-issues-latest.txt")
     review_issues_file: Path = Path("/tmp/qcf-review-issues.txt")
     audit_issues_file: Path = Path("/tmp/qcf-audit-issues.txt")
-    scout_task_file: Path = Path("/tmp/qcf-scout-task.txt")
+    pilot_task_file: Path = Path("/tmp/qcf-pilot-task.txt")
 
     # ── Stage timeouts (seconds) ──
     max_rounds: int = 3
@@ -60,11 +60,15 @@ class Config:
     fix_timeout: int = 600
     review_timeout: int = 300
     audit_timeout: int = 300
-    scout_timeout: int = 120
+    pilot_timeout: int = 120
 
     # ── Claude model overrides (empty = default) ──
-    review_model: str = "opus"
+    review_model: str = "sonnet"
     audit_model: str = ""
+
+    # ── Token budget ──
+    max_output_tokens: int = 8192
+    thinking_budget: int | None = None
 
     # ── Claude CLI flags ──
     allowed_tools: list[str] = field(default_factory=lambda: ["Write", "Read", "Edit", "Bash"])
@@ -73,7 +77,18 @@ class Config:
     # ── Commit behavior ──
     commit_enabled: bool = True
     commit_message_template: str = "feat(qcf): round-{round_num:02d} all checks passed"
+    commit_message_stage_template: str = "feat(qcf): [{stage}] round-{round_num:02d} checks passed"
     co_author: str = "Claude Opus 4.7 <noreply@anthropic.com>"
+
+    # ── Summary pack ──
+    summary_pack_file: Path = Path("/tmp/qcf-summary-pack.json")
+
+    # ── Evolution / Self-Improvement ──
+    evolution_enabled: bool = True
+    worktree_base: Path = Path("../evolve")
+    evolve_timeout: int = 600
+    meta_audit_timeout: int = 300
+    max_consecutive_fails: int = 3
 
     # ── Hooks ──
     hooks_dir: Path | None = None
@@ -91,7 +106,7 @@ class Config:
             "fix": self.fix_timeout,
             "review": self.review_timeout,
             "audit": self.audit_timeout,
-            "scout": self.scout_timeout,
+            "pilot": self.pilot_timeout,
         }.get(stage, 600)
 
     def model_for(self, stage: str) -> str | None:
@@ -102,6 +117,12 @@ class Config:
 
     def commit_message(self, round_num: int) -> str:
         msg = self.commit_message_template.format(round_num=round_num)
+        if self.co_author:
+            msg += f"\n\nCo-Authored-By: {self.co_author}"
+        return msg
+
+    def commit_message_stage(self, stage: str, round_num: int) -> str:
+        msg = self.commit_message_stage_template.format(stage=stage, round_num=round_num)
         if self.co_author:
             msg += f"\n\nCo-Authored-By: {self.co_author}"
         return msg
@@ -211,7 +232,7 @@ class Config:
         # Stages
         stages = data.get("stages", {})
         for key in ("max_rounds", "tech_lead_timeout", "implement_timeout",
-                     "fix_timeout", "review_timeout", "audit_timeout", "scout_timeout"):
+                     "fix_timeout", "review_timeout", "audit_timeout", "pilot_timeout"):
             if key in stages:
                 setattr(cfg, key, stages[key])
 
@@ -237,6 +258,10 @@ class Config:
             cfg.allowed_tools = claude["allowed_tools"]
         if "output_format" in claude:
             cfg.output_format = claude["output_format"]
+        if "max_output_tokens" in claude:
+            cfg.max_output_tokens = int(claude["max_output_tokens"])
+        if "thinking_budget" in claude:
+            cfg.thinking_budget = int(claude["thinking_budget"])
 
         # Hooks
         hooks_cfg = data.get("hooks", data.get("hook", {}))
@@ -253,6 +278,20 @@ class Config:
                 d = Path(section["hooks_dir"])
                 cfg.hooks_dir = d if d.is_absolute() else cfg.root_dir / d
 
+        # Evolution
+        evolution = data.get("evolution", {})
+        if "enabled" in evolution:
+            cfg.evolution_enabled = evolution["enabled"]
+        if "worktree_base" in evolution:
+            d = Path(evolution["worktree_base"])
+            cfg.worktree_base = d if d.is_absolute() else cfg.root_dir / d
+        if "evolve_timeout" in evolution:
+            cfg.evolve_timeout = int(evolution["evolve_timeout"])
+        if "meta_audit_timeout" in evolution:
+            cfg.meta_audit_timeout = int(evolution["meta_audit_timeout"])
+        if "max_consecutive_fails" in evolution:
+            cfg.max_consecutive_fails = int(evolution["max_consecutive_fails"])
+
         cfg._resolve_paths(cfg.root_dir)
         return cfg
 
@@ -263,7 +302,7 @@ class Config:
                           "coder_dir", "out_review_dir", "out_audit_dir", "fail_dir",
                           "task_dir",
                           "issues_file", "review_issues_file", "audit_issues_file",
-                          "scout_task_file"):
+                          "pilot_task_file", "summary_pack_file"):
             val: Path = getattr(self, attr_name)
             if not val.is_absolute():
                 setattr(self, attr_name, anchor / val)
