@@ -16,6 +16,9 @@ color: red
   {% if summary_pack %}
 - 前序迭代摘要 — 来自 Pilot 或 Summary Pack 的上轮上下文
   {% endif %}
+  {% if user_direction %}
+- 战略方向 — 来自人工 / Pilot 的当前迭代重点
+  {% endif %}
 - 关键文件：使用 Read 工具探索相关模块后编写设计
 
 ## Execution Phases
@@ -47,6 +50,12 @@ color: red
 ## 前序迭代摘要
 
 {{ summary_pack }}
+{% endif %}
+{% if user_direction %}
+
+## 战略方向
+
+{{ user_direction }}
 {% endif %}
 
 ## 要求

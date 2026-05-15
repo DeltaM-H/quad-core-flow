@@ -1,29 +1,23 @@
 ---
 name: qcf-run
-description: "Run QCF inner loop on a design doc. Usage: /qcf-run <design-doc>"
+description: "Run QCF inner loop on a design doc. Usage: /qcf-run <design-doc> [--detach]"
 allowed-tools: Bash, Read
 ---
 
-# QCF Run — Execute Inner Loop Only
+# QCF Run — Inner Loop on Design Doc
 
-Runs the QCF inner loop (implement → review → audit) on an **existing** design document
-from `tech-lead/`.
+Runs the inner loop (implement → review → audit) on an **existing** design doc
+from tech-lead output.
 
 ## Usage
 
 ```
-/qcf-run <design-doc>              — Run inner loop
-/qcf-run <design-doc> --detach     — Run in background
-/qcf-run <design-doc> --no-commit  — Disable auto-commit (debugging)
+/qcf-run <design-doc>              — Inner loop
+/qcf-run <design-doc> -d           — In background
+/qcf-run <design-doc> --no-commit   — Skip auto-commit
 ```
 
 ## Execution
 
 1. **Validate** — check the design doc exists
 2. **Run** — `qcf run <design-doc> [--detach] [--no-commit]`
-
-## Notes
-
-- Prefer `/qcf-start` for full pipeline (includes Tech-Lead → inner loop → Pilot)
-- `/qcf-run` is for testing or running the inner loop on an already-written design doc
-- Fail recovery is handled by Pilot in continuous mode; standalone run returns FAIL directly

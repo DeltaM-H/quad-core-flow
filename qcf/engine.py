@@ -111,6 +111,108 @@ _PILOT_DIRECTION_FILE = Path("/tmp/qcf-pilot-direction.txt")
 # Unified event helper (replaces legacy _write_status)
 # ══════════════════════════════════════════════════════════════
 
+def _collect_atomic_task_files(cfg: Config, original_task: Path) -> list[Path]:
+    """After validation may have split the original file, collect atomic task files.
+
+    Returns a list of ``Path``\s — either the original single task file, or
+    the ``<stem>-<NNN>.md`` split files the validator created.
+
+    Returns an empty list when *original_task* does not exist and no split
+    files matching ``<stem>-<NNN>.md`` are found.
+    """
+    if not cfg.task_dir.exists() and not original_task.exists():
+        return []
+
+    stem = original_task.stem
+
+    # Enforce numeric-suffix convention: <stem>-<NNN>.md (task-validator Phase 4)
+    split_pattern = re.compile(rf"^{re.escape(stem)}-\d+\.md$")
+    split_files = sorted(
+        f for f in cfg.task_dir.glob("*.md")
+        if split_pattern.match(f.name)
+    )
+    if split_files:
+        print(f"  → Task decomposed into {len(split_files)} atomic subtask(s)")
+        for f in split_files:
+            print(f"    - {f.name}")
+        return split_files
+
+    # Single atomic task — return original
+    return [original_task] if original_task.exists() else []
+
+
+def _clean_stage_artifacts(cfg: Config) -> None:
+    """Remove stage artifacts so the next subtask starts with clean state."""
+    for f in (cfg.scope_file, cfg.summary_file, cfg.issues_file,
+              cfg.review_issues_file, cfg.audit_issues_file):
+        f.unlink(missing_ok=True)
+    # Also clean .incomplete variants from timeout handling
+    for f in (cfg.scope_file, cfg.summary_file):
+        f.with_suffix(f.suffix + ".incomplete").unlink(missing_ok=True)
+
+
+# ── Group composition helpers ──
+
+
+def _load_group(cfg: Config, task_path: Path) -> Any | None:
+    """Load group descriptor if *task_path* belongs to a group."""
+    from .grouper import detect_group
+    return detect_group(cfg.task_dir, task_path)
+
+
+def _print_group_info(group: Any) -> None:
+    """Print group summary to console."""
+    print(f"  ┌─ Group: {_bold(group.name)} ──")
+    for t in group.execution_order():
+        deps = f" ← {', '.join(t.requires)}" if t.requires else ""
+        print(f"  ├─ {t.file}{deps}")
+    if group.interfaces:
+        print(f"  ├─ Provides: {', '.join(group.interfaces)}")
+    if group.dependencies:
+        print(f"  └─ Depends on: {', '.join(group.dependencies)}")
+    print()
+
+
+def _group_aware_tasks(cfg: Config, task_path: Path) -> list[Path]:
+    """Return atomic task files in dependency order.
+
+    If the task belongs to a group (``.group.md``), loads the group
+    descriptor, validates contracts, and returns tasks in topological
+    order.  Otherwise falls back to :func:`_collect_atomic_task_files`.
+    """
+    group = _load_group(cfg, task_path)
+    if group is not None:
+        errors = group.validate()
+        contract_errors = [e for e in errors if "not found" not in e]
+        if contract_errors:
+            print(f"  ⚠  Group contract violations:")
+            for e in contract_errors:
+                print(f"     - {e}")
+
+        ordered = group.execution_order()
+        print(f"  → Group: \"{group.name}\" — {len(ordered)} task(s), contract-ordered")
+        _print_group_info(group)
+        return [t.path for t in ordered]
+
+    return _collect_atomic_task_files(cfg, task_path)
+
+
+def _group_summary_pack(group: Any) -> str:
+    """Build a structured group summary string for Pilot context."""
+    from .grouper import GroupDef
+    if group is None:
+        return ""
+    lines = [
+        f"GROUP: {group.name}",
+        f"PROVIDES: {', '.join(group.interfaces)}" if group.interfaces else "",
+        f"DEPENDS_ON: {', '.join(group.dependencies)}" if group.dependencies else "",
+        "TASKS:",
+    ]
+    for t in group.execution_order():
+        lines.append(f"  - {t.file}  →  provides: {', '.join(t.provides) or '(none)'}")
+    return "\n".join(line for line in lines if line)
+
+
 def _emit_event(cfg: Config, event_type: str, **data: Any) -> None:
     """Append a structured event to the unified events JSONL file."""
     try:
@@ -255,7 +357,50 @@ async def _run_implement(
     return result_text, metrics
 
 
-async def _run_tech_lead(cfg: Config, task_path: Path, summary_pack: str = "") -> Path | None:
+async def _run_task_validator(cfg: Config) -> bool:
+    """Validate all task files in tasks/ directory (5-section structure + atomicity).
+
+    Returns True if validation passed (or no task files found), False on failure.
+    """
+    if not cfg.task_dir.exists():
+        return True
+
+    task_files = sorted(
+        str(p) for p in cfg.task_dir.glob("*.md")
+        if not p.name.startswith(".")
+    )
+    if not task_files:
+        return True
+
+    _emit_event(cfg, "stage.start", stage="task-validator", round=0)
+    tree = prompts.project_tree(cwd=cfg.root_dir)
+    prompt_text = prompts.task_validator_prompt(
+        task_files=task_files,
+        project_tree_str=tree,
+    )
+    log_path = cfg.log_dir / "qcf-task-validator.log"
+    result_text, metrics = await run_claude(
+        prompt_text, log_path,
+        timeout=cfg.tech_lead_timeout,
+        model=cfg.model_for("task-validator"),
+        allowed_tools=cfg.allowed_tools,
+        output_format=cfg.output_format,
+        thinking_budget=cfg.thinking_budget,
+        cwd=cfg.root_dir,
+    )
+
+    # Check if validation passed (VALIDATION_END signals completion)
+    success = "VALIDATION_END" in result_text
+    result = "PASS" if success else "FAIL"
+    _emit_event(cfg, "stage.end", stage="task-validator", result=result,
+                tokens_in=metrics.input_tokens, tokens_out=metrics.output_tokens)
+    tag = _green("PASS") if success else _red("FAIL")
+    print(f"  ⚡ Task-Validator: {tag} | {len(task_files)} files")
+    return success
+
+
+async def _run_tech_lead(cfg: Config, task_path: Path, summary_pack: str = "",
+                         user_direction: str = "") -> Path | None:
     """Core 1: Tech-Lead — analyze project and produce a design document."""
     _emit_event(cfg, "stage.start", stage="tech-lead", round=1)
 
@@ -272,6 +417,7 @@ async def _run_tech_lead(cfg: Config, task_path: Path, summary_pack: str = "") -
         design_doc_path=str(design_doc),
         project_tree_str=tree,
         summary_pack=summary_pack,
+        user_direction=user_direction,
     )
     log_path = cfg.log_dir / "qcf-tech-lead.log"
     result_text, metrics = await run_claude(
@@ -308,14 +454,6 @@ async def _run_pilot(cfg: Config, last_task: str = "",
     """
     _emit_event(cfg, "stage.start", stage="pilot", round=0)
 
-    # Read one-shot direction from /pilot skill (if any), merge with param
-    direction = user_direction
-    if _PILOT_DIRECTION_FILE.exists():
-        skill_direction = _PILOT_DIRECTION_FILE.read_text().strip()
-        if skill_direction:
-            direction = skill_direction if not direction else f"{direction}; {skill_direction}"
-        _PILOT_DIRECTION_FILE.unlink(missing_ok=True)
-
     tree = prompts.project_tree(cwd=cfg.root_dir, max_depth=4)
     cfg.task_dir.mkdir(parents=True, exist_ok=True)
 
@@ -324,7 +462,7 @@ async def _run_pilot(cfg: Config, last_task: str = "",
         last_task=last_task,
         round_history=round_history or [],
         task_output_path=str(cfg.pilot_task_file),
-        user_direction=direction,
+        user_direction=user_direction,
         fail_context=fail_context,
     )
     log_path = cfg.log_dir / "qcf-pilot.log"
@@ -348,18 +486,53 @@ async def _run_pilot(cfg: Config, last_task: str = "",
         except OSError:
             pass
 
-    # Clean up pilot task output if it exists
+    # ── Parse Pilot output ──
     verdict = "STEADY_STATE"
     new_task: Path | None = None
     if cfg.pilot_task_file.exists():
         content = cfg.pilot_task_file.read_text().strip()
         if "STEADY_STATE" not in content:
-            # Write as a new task file
-            task_name = f"pilot-{time.strftime('%Y%m%d-%H%M%S')}.md"
-            new_task = cfg.task_dir / task_name
             cfg.task_dir.mkdir(parents=True, exist_ok=True)
-            new_task.write_text(content)
-            verdict = str(new_task)
+
+            # Detect group output (YAML frontmatter with kind: group)
+            is_group = content.startswith("---") and "kind: group" in content
+
+            if is_group:
+                # Validate: must have closing --- (not partial output)
+                if content.count("---") < 2:
+                    print("  ⚠  Group YAML frontmatter incomplete (no closing ---) — treating as legacy task")
+                    is_group = False
+
+            if is_group:
+                # Save as .group.md — extract name from YAML
+                import yaml
+                fm: dict = {}
+                try:
+                    parsed = yaml.safe_load(content.split("---", 2)[1])
+                    if isinstance(parsed, dict):
+                        fm = parsed
+                    gname = fm.get("name", "pilot-group")
+                except Exception:
+                    gname = "pilot-group"
+                safe_name = re.sub(r"[^\w\-]+", "-", gname).strip("-").lower() or "pilot-group"
+                group_path = cfg.task_dir / f"{safe_name}.group.md"
+
+                # Verify subtask files exist before saving
+                task_refs = fm.get("tasks", [])
+                missing = [t["file"] for t in task_refs if not (cfg.task_dir / t["file"]).exists()] if isinstance(task_refs, list) else ["(invalid tasks)"]
+                if missing:
+                    print(f"  ⚠  Subtask files missing: {', '.join(missing)} — saving group anyway (validator will catch)")
+                else:
+                    print(f"  → Group created: {group_path.name} ({len(task_refs)} subtask(s))")
+
+                group_path.write_text(content)
+                verdict = str(group_path)
+            else:
+                # Legacy single-task output
+                task_name = f"pilot-{time.strftime('%Y%m%d-%H%M%S')}.md"
+                new_task = cfg.task_dir / task_name
+                new_task.write_text(content)
+                verdict = str(new_task)
         cfg.pilot_task_file.unlink(missing_ok=True)
 
     verdict_tag = "STEADY_STATE" if verdict == "STEADY_STATE" else "NEW_TASK"
@@ -1117,6 +1290,11 @@ class QCFEngine:
         self._consecutive_fails = 0
         self._no_commit = False
 
+    def reset(self) -> None:
+        """Reset round-level state for the next subtask (keeps config/hooks/reporter)."""
+        self.overview = RoundsOverview()
+        self._consecutive_fails = 0
+
     async def run(
         self,
         design_doc: Path,
@@ -1141,6 +1319,23 @@ class QCFEngine:
             return "FAIL"
 
         design_content = design_doc.read_text()  # kept for replan context
+
+        # ── Architecture review on design doc (always, regardless of entry point) ──
+        print(f"\n  [Architecture] Reviewing design document...")
+        arch_result = await _run_arch_reviewer(
+            cfg, round_num=0, design_doc_path=design_doc,
+        )
+        if arch_result.result != "PASS":
+            print(f"  ❌ Design rejected by architecture review — aborting")
+            _emit_event(cfg, "stage.end", stage="arch-reviewer(design)",
+                        round=0, result="FAIL")
+            issues_summary = ""
+            if arch_result.issues:
+                issues_summary = "\n".join(
+                    f"- [{i.severity}] {i.file}: {i.description}"
+                    for i in arch_result.issues)
+            print(f"  Issues:\n{issues_summary}" if issues_summary else "")
+            return "FAIL"
 
         # MEDIUM-2: Restrict permissions on all files created by this process
         # and its subprocesses (including /tmp review/audit issue files).
@@ -1458,6 +1653,7 @@ class QCFEngine:
             print(f"  Evolution error: {e}")
 
     async def run_continuous(self, task_path: Path, max_iterations: int = 10,
+                              max_rounds: int | None = None,
                               user_direction: str = "") -> None:
         """Outer loop: Tech-Lead → inner loop → Pilot → repeat until steady state."""
         cfg = self.config
@@ -1475,79 +1671,117 @@ class QCFEngine:
         iteration = 1
         summary_content = ""  # Loaded from summary pack between iterations
 
+        # Read strategic direction once at entry — merge CLI param + /pilot skill file
+        _direction = user_direction
+        if _PILOT_DIRECTION_FILE.exists():
+            skill_dir = _PILOT_DIRECTION_FILE.read_text().strip()
+            if skill_dir:
+                _direction = skill_dir if not _direction else f"{_direction}; {skill_dir}"
+            _PILOT_DIRECTION_FILE.unlink(missing_ok=True)
+
         while iteration <= max_iterations:
             print(f"\n╔═══ Iteration {iteration} ═══╗")
 
-            # ── Step 1: Tech-Lead (generate design doc) ──
-            print(f"\n  [Core 1] Tech-Lead — analyzing project...")
-            design_doc = await _run_tech_lead(cfg, current_task, summary_pack=summary_content)
-            if design_doc is None:
-                print("  Tech-Lead failed — aborting continuous loop.")
+            # ── Step 0: Validate task file(s) ──
+            print(f"\n  [Pre] Validating task files...")
+            if not await _run_task_validator(cfg):
+                print("  Task validation failed — aborting iteration.")
                 break
 
-            # ── Step 1.5: Architecture review on design doc (pre-implementation) ──
-            print(f"\n  [Architecture] Reviewing design document...")
-            arch_result = await _run_arch_reviewer(cfg, round_num=0,
-                                                   design_doc_path=design_doc)
-            if arch_result.result != "PASS":
-                print(f"  ❌ Design rejected by architecture review — aborting iteration")
-                _emit_event(cfg, "stage.end", stage="arch-reviewer(design)",
-                            round=0, result="FAIL")
-                # Pass design failure to Pilot for recovery assessment
-                fail_context = f"Design rejected: {arch_result.summary}"
-                if arch_result.issues:
-                    fail_context += "\nIssues:\n" + "\n".join(
-                        f"- [{i.severity}] {i.file}: {i.description}"
-                        for i in arch_result.issues)
-                verdict, project_summary = await _run_pilot(
-                    cfg, last_task=current_task.name,
-                    round_history=[f"arch-reviewer(design): FAIL — {arch_result.summary[:80]}"],
-                    fail_context=fail_context,
-                )
-                if verdict == "STEADY_STATE":
+            # ── Step 0.5: Group-aware task collection ──
+            atomic_tasks = _group_aware_tasks(cfg, current_task)
+            if not atomic_tasks:
+                print("  No atomic task files found — aborting iteration.")
+                break
+
+            # ── Step 0.6: Check if group scope is self-contained ──
+            _iteration_group = _load_group(cfg, current_task)
+            _iteration_has_group = _iteration_group is not None
+            if _iteration_has_group:
+                gname = _iteration_group.name
+                print(f"\n  → Group \"{gname}\" is self-contained — processing all subtasks without Pilot loop")
+                _emit_event(cfg, "group.start", group=gname,
+                            subtask_count=len(atomic_tasks), iteration=iteration)
+
+            # ── Steps 1-2: Process each atomic subtask ──
+            iteration_overall = True
+            fail_context = ""
+            for sub_idx, subtask in enumerate(atomic_tasks):
+                if sub_idx > 0:
+                    print(f"\n  {'─' * 46}")
+                print(f"\n  Subtask {sub_idx + 1}/{len(atomic_tasks)}: {subtask.name}")
+
+                # Tech-Lead
+                print(f"\n  [Core 1] Tech-Lead — analyzing project...")
+                design_doc = await _run_tech_lead(cfg, subtask, summary_pack=summary_content,
+                                                   user_direction=_direction)
+                if design_doc is None:
+                    print("  Tech-Lead failed — aborting continuous loop.")
+                    iteration_overall = False
                     break
-                current_task = Path(verdict)
-                if not current_task.exists():
-                    break
-                self.overview = RoundsOverview()
+
+                # Inner loop
+                print(f"\n  [Core 2-4] Starting inner loop (with arch-review)...")
+                result = await self.run(design_doc, max_rounds=max_rounds or cfg.max_rounds)
+
+                # Handle REPLAN
+                if result == "REPLAN":
+                    print(f"\n  [QCF] Inner loop returned REPLAN — evolution sandbox initiated.")
+                    _emit_event(cfg, "pipeline.end", result="REPLAN",
+                                 iteration=iteration,
+                                 reason="inner_loop_replan")
+                    return
+
+                # Handle FAIL
+                if result == "FAIL":
+                    print(f"\n  ⛔ Subtask {subtask.name} FAILED — reverting code")
+                    _emit_event(cfg, "stage.start", stage="fail-recovery", iteration=iteration)
+
+                    ret = subprocess.run(["git", "checkout", "--", "."],
+                                         cwd=cfg.root_dir, capture_output=True, text=True)
+                    if ret.returncode != 0:
+                        print(f"  ⚠ git checkout failed: {ret.stderr.strip() or ret.stdout.strip()}")
+                    elif cfg.coder_dir.exists():
+                        subprocess.run(["git", "clean", "-fd", str(cfg.coder_dir)],
+                                       cwd=cfg.root_dir, capture_output=True)
+
+                    if cfg.fail_dir.exists():
+                        for f in sorted(cfg.fail_dir.glob("*-fail-report-*.md"))[-3:]:
+                            content = f.read_text("utf-8", errors="replace")
+                            fail_context += f"--- {f.name} ---\n{content[:2000]}\n\n"
+
+                    iteration_overall = False
+                    break  # Stop subtask processing on first failure
+
+                # Emit subtask completion event
+                if _iteration_has_group:
+                    _emit_event(cfg, "group.subtask_end", group=_iteration_group.name,
+                                subtask=subtask.name, index=sub_idx,
+                                result=result)
+
+                # Clean context between subtasks
+                if sub_idx < len(atomic_tasks) - 1:
+                    _clean_stage_artifacts(cfg)
+
+            if not iteration_overall:
+                # Subtask(s) failed — skip Pilot, advance iteration to retry
+                print(f"\n  → Iteration {iteration} had failures — skipping Pilot, will retry")
+                self.reset()
                 iteration += 1
                 continue
 
-            # ── Step 2: Inner loop (implement → review → audit) ──
-            print(f"\n  [Core 2-4] Starting inner loop...")
-            result = await self.run(design_doc)
-
-            # Handle REPLAN from inner loop
-            if result == "REPLAN":
-                print(f"\n  [QCF] Inner loop returned REPLAN — evolution sandbox initiated.")
-                _emit_event(cfg, "pipeline.end", result="REPLAN",
-                             iteration=iteration,
-                             reason="inner_loop_replan")
+            # Group scope is self-contained -- no Pilot loop, exit cleanly
+            if _iteration_has_group:
+                print(f"\n  {_green('PASS')} Group complete -- all {len(atomic_tasks)} subtask(s) passed")
+                _emit_event(cfg, "pipeline.end", result="STEADY_STATE",
+                             iteration=iteration, group=_iteration_group.name)
                 break
 
-            # ── Handle inner loop exhaustion ──
-            fail_context = ""
-            if result == "FAIL":
-                print(f"\n  ⛔ Inner loop max rounds — reverting code to last commit")
-                _emit_event(cfg, "stage.start", stage="fail-recovery", iteration=iteration)
-
-                ret = subprocess.run(["git", "checkout", "--", "."],
-                                     cwd=cfg.root_dir, capture_output=True, text=True)
-                if ret.returncode != 0:
-                    print(f"  ⚠ git checkout failed: {ret.stderr.strip() or ret.stdout.strip()}")
-                elif cfg.coder_dir.exists():
-                    subprocess.run(["git", "clean", "-fd", str(cfg.coder_dir)],
-                                   cwd=cfg.root_dir, capture_output=True)
-
-                if cfg.fail_dir.exists():
-                    for f in sorted(cfg.fail_dir.glob("*-fail-report-*.md"))[-3:]:
-                        content = f.read_text("utf-8", errors="replace")
-                        fail_context += f"--- {f.name} ---\n{content[:2000]}\n\n"
-
-                print(f"  → Code reverted, fail context ({len(fail_context)}b) → Pilot\n")
-
-            # Build round history for pilot
-            round_history = [
+            # Build round history for Pilot (with group context if applicable)
+            group = _load_group(cfg, current_task)
+            group_ctx = _group_summary_pack(group) if group else ""
+            round_history = [f"GROUP: {group.name}"] if group else []
+            round_history += [
                 f"{m.stage}: {m.result}" + (f" ({m.summary[:60]})" if m.summary else "")
                 for m in self.overview.entries
             ]
@@ -1558,7 +1792,7 @@ class QCFEngine:
                 cfg,
                 last_task=current_task.name,
                 round_history=round_history,
-                user_direction=user_direction,
+                user_direction=_direction,
                 fail_context=fail_context,
             )
 
@@ -1577,12 +1811,18 @@ class QCFEngine:
                 print(f"  Pilot task file not found: {current_task}")
                 break
 
+            # Add group context to summary pack if available
+            group = _load_group(cfg, current_task)
+            group_ctx = _group_summary_pack(group) if group else ""
+
             # Use Pilot's PROJECT_SUMMARY if available, else fall back to code analysis
             if project_summary:
                 summary_content = project_summary
                 print(f"  Project summary extracted from Pilot")
             else:
                 summary_content = _write_summary_pack(cfg, current_task, round_history)
+            if group_ctx:
+                summary_content += f"\n\n---\n{group_ctx}"
             if summary_content:
                 print(f"  Summary pack written to {cfg.summary_pack_file}")
 
@@ -1590,8 +1830,8 @@ class QCFEngine:
             _emit_event(cfg, "iteration.end", iteration=iteration,
                          new_task=current_task.name)
 
-            # Reset overview for next iteration
-            self.overview = RoundsOverview()
+            # Reset for next iteration
+            self.reset()
             iteration += 1
 
         else:

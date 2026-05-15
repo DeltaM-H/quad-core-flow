@@ -73,6 +73,7 @@ class Config:
     implement_model: str = ""
     fix_model: str = ""
     pilot_model: str = ""
+    task_validator_model: str = ""
 
     # ── Claude CLI flags ──
     allowed_tools: list[str] = field(default_factory=lambda: ["Write", "Read", "Edit", "Bash"])
@@ -134,6 +135,7 @@ class Config:
             "implement": self.implement_model,
             "fix": self.fix_model,
             "pilot": self.pilot_model,
+            "task-validator": self.task_validator_model,
         }.get(stage) or None
 
     def commit_message(self, round_num: int) -> str:

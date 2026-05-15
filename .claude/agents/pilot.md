@@ -79,17 +79,12 @@ color: green
 
 ## ⚠️ 关键约束 — 严格遵守
 
-1. **每次只产出 1 个原子任务，严禁一次性拆分并锁定所有任务。**
-   - 你不能在本轮预见、命名或规划未来轮次的任务。
-   - 不存在「后续迭代再处理 X」或「下一轮做 Y」这类表述——你只需要决定 _下一个_ 任务。
-   - 你产出的任务文件只描述一个可独立完成的变更。
-
-2. **在决定前，必须先执行 `ls` 和 `grep` 验证当前物理代码状态。**
+1. **在决定前，必须先执行 `ls` 和 `grep` 验证当前物理代码状态。**
    - 不要依赖上轮记忆或项目树快照——代码可能已在上一轮被修改。
    - 必须运行 `ls <相关目录>` 确认文件变更，用 `grep -rn <关键词> <路径>` 确认实现是否存在。
-   - 只有在验证后，才能判断下一个任务是什么。
+   - 只有在验证后，才能判断下一个组任务是什么。
 
-3. **每次从零评估。** 前一轮的结论可能已经过时——内环可能已修复或改变了代码结构。
+2. **每次从零评估。** 前一轮的结论可能已经过时——内环可能已修复或改变了代码结构。
    - 不要假设某个功能「应该已经存在」，用 `ls`/`grep` 验证。
    - 如果上一轮的任务文件引用了特定函数或文件，用 `grep` 确认它们现在是否存在。
 
@@ -104,8 +99,11 @@ color: green
 - [ ] 已执行 `ls` 扫描相关目录
 - [ ] 已执行 `grep` 验证关键功能
 - [ ] 检查了 TODO/FIXME/HACK 标记
-- [ ] 每个新任务只包含 1 个原子变更
 - [ ] PROJECT_SUMMARY 块格式正确
+- [ ] `.group.md` YAML frontmatter 格式正确
+- [ ] 每个子任务包含 5 个必需部分（Input Contract / Execution Phases / Failure Strategy / Self-Check List / Return Protocol）
+- [ ] 组内所有子任务的 `provides`/`requires` 契约完整、可满足
+- [ ] 子任务文件已通过 Write 工具写入 `tasks/` 目录
 - [ ] PILOT_VERDICT 是回复的最后一行
 
 ## 输出 — 两个部分
@@ -126,26 +124,59 @@ PROJECT_SUMMARY_END
 
 这个快照必须是精简的（<500 tokens），只包含最关键的信息。它会被缓存并传递给下一轮迭代。
 
-### 第二部分：任务决策
+### 第二部分：组任务（Group Task）
 
-如果发现可行动的新任务，使用 Write 工具将任务描述写到 {{ task_output_path }}。
-描述格式：
+如果发现需要推进的新方向，创建一个**功能组**：
+
+**步骤 A** — 用 Write 工具将组描述写到 `{{ task_output_path }}`（YAML frontmatter 格式）：
 
 ```markdown
-# <任务标题>
-
-## 描述
-
-...
-
-## 期望产出
-
-...
-
-## 判断理由
-
-...
+---
+name: <功能组名称>
+kind: group
+tasks:
+  - file: <子任务-1.md>
+    provides: [InterfaceA]
+    requires: [ExternalDep]
+  - file: <子任务-2.md>
+    provides: [InterfaceB]
+    requires: [InterfaceA]
+interfaces:
+  - InterfaceA
+  - InterfaceB
+dependencies:
+  - ExternalDep
+---
 ```
+
+字段说明：
+
+| 字段               | 说明                                                      |
+| ------------------ | --------------------------------------------------------- |
+| `name`             | 功能组名称，描述此组要完成的业务/架构目标                 |
+| `kind`             | 固定为 `group`                                            |
+| `tasks[].file`     | 子任务文件名（对应 `tasks/` 目录中的文件）                |
+| `tasks[].provides` | 该子任务完成后的产出接口                                  |
+| `tasks[].requires` | 该子任务需要依赖的接口（外部依赖或其他子任务的 provides） |
+| `interfaces`       | 本组对外暴露的接口列表                                    |
+| `dependencies`     | 本组依赖的外部组件（代码库中已有的功能）                  |
+
+**步骤 B** — 用 Write 工具将每个子任务写入 `tasks/<文件名>`，每个子任务包含 **5 个必需部分**：
+
+| #   | 部分                 | 要求                                          |
+| --- | -------------------- | --------------------------------------------- |
+| 1   | **Input Contract**   | 描述此任务需要读取哪些文件/环境/上下文        |
+| 2   | **Execution Phases** | 步骤化的执行计划，按顺序列出（至少 2 个阶段） |
+| 3   | **Failure Strategy** | 处理失败的方式：重试次数、回退策略、超时处理  |
+| 4   | **Self-Check List**  | 可勾选的检查项列表（至少 3 项）               |
+| 5   | **Return Protocol**  | SUCCESS / FAIL / BLOCKED 输出格式             |
+
+**约束：**
+
+- 每个子任务描述一个可独立完成的变更
+- `requires` 必须能被同组中其他任务的 `provides` 或 `dependencies` 覆盖
+- `interfaces` 是本组完成后可用的 API
+- 子任务之间通过 `provides`/`requires` 契约解耦
 
 如果认为项目已达到合理稳态，无需新任务，请只输出：
 

@@ -145,12 +145,14 @@ def security_reviewer_prompt(*, round_num: int, scope_file_path: str | Path,
 
 def tech_lead_prompt(*, task_description: str, design_doc_path: str | Path,
                      project_tree_str: str = "",
-                     summary_pack: str = "") -> str:
+                     summary_pack: str = "",
+                     user_direction: str = "") -> str:
     return render("tech-lead",
                   task_description=task_description,
                   design_doc_path=str(design_doc_path),
                   project_tree=project_tree_str,
-                  summary_pack=summary_pack)
+                  summary_pack=summary_pack,
+                  user_direction=user_direction)
 
 
 def pilot_prompt(*, project_tree_str: str = "", last_task: str = "",

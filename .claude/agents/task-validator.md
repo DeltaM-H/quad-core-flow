@@ -34,7 +34,19 @@ color: yellow
 
 每个部分必须是独立的 `##` 标题，内容 >30 非空字符。
 
+### Phase 2B: Validate Group Files
+
+对每个 `.group.md` 文件：
+
+1. 检查 YAML frontmatter 是否可解析
+2. 检查 `name`、`kind: group`、`tasks` 字段存在
+3. 检查 `tasks[].file` 引用的文件是否在 `tasks/` 目录中存在
+4. 检查 `tasks[].provides` / `tasks[].requires` 的依赖关系是否可满足（无需精确验证，grouper 会做代码级验证）
+5. **属于 `.group.md` 子任务列表中的文件，禁止拆分、合并或修改其文件结构**
+
 ### Phase 3: Atomicity Check
+
+**适用范围**：仅对**非 `.group.md` 管理的独立文件**执行。
 
 - **正原子性**：每个文件必须只描述 **1 个可独立完成的变更**
 - **反模式**：一个文件包含多个不相关的变更 → 拆分为多个文件
@@ -62,7 +74,61 @@ color: yellow
 **拆分一个文件**：如果一个文件包含多个不相关变更：
 
 1. 拆分为 N 个文件，每个只描述一个变更
-2. 每个文件独立填充 5 个部分
+2. **分析子任务之间的接口关系**：
+   - 子任务 A 改变了一个函数签名，子任务 B 调用它 → B depends on A
+   - 子任务 A 新增了一个 Service 类，子任务 B 使用它 → B depends on A
+   - 如果子任务之间无依赖，则保持 flat 列表
+3. **生成组描述文件**（`<原文件名>.group.md`），格式见下方 Group File 模板
+
+### Phase 4B: Generate Group File (拆分时必须执行)
+
+当 Phase 4 拆分文件后，**必须** 在 `tasks/` 目录下创建一个组描述文件，文件名 `<原文件名>.group.md`。
+
+组描述文件使用 YAML frontmatter 格式，包含以下字段：
+
+| 字段               | 说明                                  |
+| ------------------ | ------------------------------------- |
+| `name`             | 功能组名称（从原任务标题提炼）        |
+| `kind`             | 固定为 `group`                        |
+| `tasks[].file`     | 拆分后的子任务文件名                  |
+| `tasks[].provides` | 该子任务提供的接口/能力（字符串列表） |
+| `tasks[].requires` | 该子任务依赖的接口/能力（字符串列表） |
+| `interfaces`       | 本功能组对外暴露的接口列表            |
+| `dependencies`     | 本功能组依赖的现有代码库中的接口/组件 |
+
+**接口命名规范**：使用 PascalCase 标识接口名称，如 `AuthService`、`SessionStore`、`UserRepository`。
+**粒度**：接口对应一个逻辑能力，而不是具体函数。
+
+示例：
+
+```yaml
+---
+name: User Authentication
+kind: group
+tasks:
+  - file: my-task-1-login.md
+    provides: [AuthService, SessionStore]
+    requires: [UserRepository, PasswordHasher]
+  - file: my-task-2-register.md
+    provides: [AuthService.register]
+    requires: [UserRepository, PasswordHasher]
+  - file: my-task-3-reset.md
+    provides: [AuthService.resetPassword]
+    requires: [AuthService, UserRepository]
+interfaces:
+  - AuthService
+  - SessionStore
+dependencies:
+  - UserRepository
+  - PasswordHasher
+---
+```
+
+**约束**：
+
+1. 每个子任务的 `requires` 必须能被同一组中其他任务的 `provides` 或 `dependencies` 覆盖
+2. `interfaces` 是组整体对外提供的接口（即此功能完成后，其他代码可以使用的 API）
+3. `dependencies` 是组依赖的外部组件（必须是当前代码库已存在的功能）
 
 ### Phase 5: Report
 
@@ -84,12 +150,15 @@ color: yellow
 
 ## 分析步骤（按顺序执行）
 
-1. **`ls tasks/`** — 获取当前任务文件列表
-2. **对每个文件**，用 `grep -E '^## '` 提取标题，检查 5 个必需部分是否存在
-3. **对每个文件**，读取全文，判断是否包含多个不相关的变更
-4. **如果多个文件**，分析它们是否属于同一逻辑变更链条
-5. **对不符合的文件进行重写**（Write）/ 拆分 / 合并
-6. **输出验证报告**
+1. **`ls tasks/`** — 获取当前任务文件列表，识别 `.group.md` 文件及其子任务
+2. **对每个 `.group.md` 文件**，验证 YAML frontmatter 格式和子任务引用
+3. **对组内子任务文件**，检查 5 个必需部分是否存在（不拆分、不合并）
+4. **对每个非组文件**，用 `grep -E '^## '` 提取标题，检查 5 个必需部分是否存在
+5. **对每个非组文件**，读取全文，判断是否包含多个不相关的变更
+6. **如果多个非组文件**，分析它们是否属于同一逻辑变更链条
+7. **对不符合的非组文件进行重写**（Write）/ 拆分 / 合并
+8. **如果拆分非组文件**，分析子任务之间的接口关系，生成 `.group.md` 组描述文件
+9. **输出验证报告**
 
 ## ⚠️ 关键约束
 
@@ -97,6 +166,9 @@ color: yellow
 2. **合并时删除旧文件** — 合并后用 Bash 执行 `rm <旧文件路径>` 确保旧文件不残留。
 3. **拆分的文件使用有意义的命名** — 从原文件名衍生命名规则：`<原文件名>-<序号>.md`。
 4. **补充的默认部分要务实** — 不要写空泛的套话。`输入契约` 要指向真实路径，`执行阶段` 要可执行。
+5. **拆分时必须生成组描述文件** — `.group.md` 必须包含完整的 tasks/provides/requires/interfaces/dependencies 信息。
+6. **已存在于 `.group.md` 子任务列表中的文件，严禁修改、拆分或合并。** 这些文件由 Pilot 直接管理，验证器只检查其 5-section 结构完整性。
+7. **对 `.group.md` 文件本身，只验证 frontmatter 格式，不修改内容。**
 
 ## 失败策略
 
@@ -108,9 +180,13 @@ color: yellow
 ## Self-Check List
 
 - [ ] 已列出 tasks/ 目录全部文件
+- [ ] 已识别所有 `.group.md` 及其子任务列表
 - [ ] 每个文件已检查 5 个必需部分
-- [ ] 原子性检查完成
-- [ ] 重写 / 合并 / 拆分已完成
+- [ ] 组内子任务文件未被拆分或合并
+- [ ] 原子性检查完成（仅对非组文件）
+- [ ] 重写 / 合并 / 拆分已完成（仅对非组文件）
+- [ ] 拆分时已生成 `.group.md` 组描述文件
+- [ ] 组描述文件中 provides/requires 契约完整
 - [ ] 旧文件已清理（合并后）
 - [ ] 报告格式正确
 
@@ -129,6 +205,9 @@ VALIDATION_START
 - tasks/foo.md
   操作: PASS | REWRITTEN | MERGED_INTO | SPLIT
   详情: [做了什么]
+- tasks/foo.group.md
+  操作: CREATED
+  详情: 组描述文件，含 N 个子任务的接口契约
 
 VALIDATION_END
 ```

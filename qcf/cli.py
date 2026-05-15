@@ -181,21 +181,69 @@ def _cmd_auto(args: argparse.Namespace) -> None:
         _run_detached_auto(task_path, max_rounds, args.continuous, args.config)
         return
 
+    # Group detection: if task belongs to a group, continuous mode is not applicable
+    from .engine import _load_group
+    _auto_has_group = _load_group(cfg, task_path) is not None
+    if args.continuous and _auto_has_group:
+        print(f"⚠ Continuous mode not applicable for group tasks — processing as single batch")
+        args.continuous = False
+
     if args.continuous:
         print(f"⚡ The Quad-Core Flow — Continuous Mode")
         print(f"   Task: {task_path.name} | Max inner rounds: {max_rounds}")
-        asyncio.run(engine.run_continuous(task_path))
+        asyncio.run(engine.run_continuous(task_path, max_rounds=max_rounds))
     else:
         print(f"⚡ The Quad-Core Flow — Single Task")
         print(f"   Task: {task_path.name} | Max inner rounds: {max_rounds}")
-        # Step 1: Tech-Lead
-        design_doc = _run_tech_lead_stage(cfg, task_path)
-        if not design_doc:
-            print("Tech-Lead failed — aborting.")
+        # Step 0: Validate task file(s)
+        if not _run_task_validator_stage(cfg):
+            print("Task validation failed — aborting.")
             sys.exit(1)
-        # Step 2: Inner loop
-        success = asyncio.run(engine.run(design_doc, max_rounds=max_rounds))
-        sys.exit(0 if success else 1)
+
+        # Step 0.5: Group-aware task collection
+        from .engine import _group_aware_tasks, _clean_stage_artifacts
+        atomic_tasks = _group_aware_tasks(cfg, task_path)
+        if not atomic_tasks:
+            print("Error: no atomic task files found after validation.")
+            sys.exit(1)
+        print(f"  [QCF] Task count: {len(atomic_tasks)}")
+
+        # Steps 1-2: Process each atomic subtask sequentially
+        for i, subtask in enumerate(atomic_tasks):
+            if len(atomic_tasks) > 1:
+                print(f"\n{'=' * 46}")
+                print(f"  Subtask {i + 1}/{len(atomic_tasks)}: {subtask.name}")
+                print(f"{'=' * 46}\n")
+
+            # Tech-Lead
+            design_doc = _run_tech_lead_stage(cfg, subtask)
+            if not design_doc:
+                print(f"Tech-Lead failed for {subtask.name} — aborting.")
+                sys.exit(1)
+
+            # Inner loop (fresh context per subtask)
+            engine = QCFEngine(cfg)
+            result = asyncio.run(engine.run(design_doc, max_rounds=max_rounds))
+            if result == "REPLAN":
+                print(f"[QCF] Subtask {subtask.name} triggered REPLAN — evolution sandbox initiated.")
+                sys.exit(2)
+            if result != "PASS":
+                print(f"[QCF] Subtask {subtask.name} failed ({result}) — aborting.")
+                sys.exit(1)
+
+            # Clean stage artifacts between subtasks
+            if i < len(atomic_tasks) - 1:
+                _clean_stage_artifacts(cfg)
+
+        print(f"\n  ✅ All {len(atomic_tasks)} subtask(s) passed.")
+        sys.exit(0)
+
+
+def _run_task_validator_stage(cfg: Config) -> bool:
+    """Synchronous wrapper for task validator."""
+    import asyncio
+    from .engine import _run_task_validator
+    return asyncio.run(_run_task_validator(cfg))
 
 
 def _run_tech_lead_stage(cfg: Config, task_path: Path) -> Path | None:
