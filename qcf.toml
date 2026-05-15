@@ -14,7 +14,10 @@
 # audit_timeout = 300
 
 [models]
-# review = "opus"
+"api-reviewer" = "sonnet"
+"design-reviewer" = "sonnet"
+"code-quality-reviewer" = "sonnet"
+"arch-reviewer" = "opus"
 # audit = ""
 
 [paths]

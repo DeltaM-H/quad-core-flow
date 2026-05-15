@@ -241,7 +241,7 @@ async def _run_meta_audit(
     Returns:
         ``"PASS"`` or ``"FAIL"``
     """
-    prompt_text = prompts.meta_audit_prompt(
+    prompt_text = prompts.meta_auditor_prompt(
         current_design=current_design,
         diff=diff,
         fail_logs="\n---\n".join(fail_logs[-3:]),  # Last 3 fail logs

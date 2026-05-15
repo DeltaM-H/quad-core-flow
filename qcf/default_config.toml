@@ -14,8 +14,14 @@
 # audit_timeout = 300
 
 [models]
-# review = "opus"
-# audit = ""
+# Per-perspective review models (individual takes priority)
+# "api-reviewer" = "sonnet"
+# "design-reviewer" = "sonnet"
+# "code-quality-reviewer" = "sonnet"
+# "arch-reviewer" = "sonnet"
+# "review" sets all perspectives as fallback:
+# review = "sonnet"
+# "security-reviewer" = ""
 
 [paths]
 # 所有路径相对于 workspace.docs_dir，除非是绝对路径

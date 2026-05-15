@@ -2,7 +2,7 @@
 output/
 tests/
 tasks/
-.claude/
+
 
 # Python
 __pycache__/

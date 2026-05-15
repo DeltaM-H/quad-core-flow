@@ -1,4 +1,13 @@
-"""Jinja2 prompt template loading and rendering (now using .md extension)."""
+"""Jinja2 prompt template loading and rendering.
+
+Templates are Claude Code agent .md files with YAML frontmatter
+and Jinja2 ``{{ }}`` variables in the body.  The YAML frontmatter
+is stripped on render so it does not appear in the system prompt.
+
+Default template directory is ``qcf/prompts/`` (tracked in git).
+Override via ``set_template_dir()`` at pipeline start (e.g. to load
+from ``.claude/agents/``).
+"""
 
 from __future__ import annotations
 
@@ -7,34 +16,59 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
-_TEMPLATE_DIR = Path(__file__).parent
-_env = Environment(
+_TEMPLATE_DIR: Path = Path(__file__).parent
+_env: Environment = Environment(
     loader=FileSystemLoader(str(_TEMPLATE_DIR)),
     trim_blocks=True,
     lstrip_blocks=True,
 )
 
 
+def set_template_dir(path: str | Path) -> None:
+    """Override the template directory (e.g. for custom agent paths)."""
+    global _TEMPLATE_DIR, _env
+    _TEMPLATE_DIR = Path(path)
+    _env = Environment(
+        loader=FileSystemLoader(str(_TEMPLATE_DIR)),
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
+
+
 def render(template_name: str, **kwargs) -> str:
     """Render a prompt template with *kwargs* as context variables.
 
-    Templates are .md files (migrated from .j2).  Jinja2 rendering is
-    still used for variable substitution.
+    Templates are Claude Code agent .md files with YAML frontmatter
+    and Jinja2 ``{{ }}`` variables in the body.  The YAML frontmatter
+    is stripped before rendering so it does not appear in the system
+    prompt sent to the Claude API.
 
-    Available templates:
+    Available templates (in ``qcf/prompts/``):
         - ``implement.md``
-        - ``api_review.md``
-        - ``design_review.md``
-        - ``audit.md``
+        - ``api-reviewer.md``
+        - ``design-reviewer.md``
+        - ``code-quality-reviewer.md``
+        - ``arch-reviewer.md``
+        - ``security-reviewer.md``
         - ``tech-lead.md``
         - ``pilot.md``
         - ``evolver.md``
-        - ``meta_audit.md``
+        - ``meta-auditor.md``
     """
     if not template_name.endswith(".md"):
         template_name += ".md"
     template = _env.get_template(template_name)
-    return template.render(**kwargs)
+    rendered = template.render(**kwargs)
+    return _strip_frontmatter(rendered)
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Strip YAML frontmatter (``--- ... ---``) if present."""
+    if text.startswith("---"):
+        idx = text.find("---", 3)
+        if idx != -1:
+            return text[idx + 3:].lstrip()
+    return text
 
 
 def project_tree(cwd: Path | None = None, max_depth: int = 3) -> str:
@@ -71,30 +105,50 @@ def implement_prompt(*, design_doc_path: str | Path,
                   brief_summary_path=str(brief_summary_path))
 
 
-def api_review_prompt(*, round_num: int, summary_file_path: str | Path,
+def api_reviewer_prompt(*, round_num: int, summary_file_path: str | Path,
                        scope_file_path: str | Path,
                        issues_file: str | Path) -> str:
-    return render("api_review",
+    return render("api-reviewer",
                   round_num=round_num,
                   summary_file_path=str(summary_file_path),
                   scope_file_path=str(scope_file_path),
                   issues_file=str(issues_file))
 
 
-def design_review_prompt(*, round_num: int, summary_file_path: str | Path,
+def design_reviewer_prompt(*, round_num: int, summary_file_path: str | Path,
                           scope_file_path: str | Path,
                           issues_file: str | Path) -> str:
-    return render("design_review",
+    return render("design-reviewer",
                   round_num=round_num,
                   summary_file_path=str(summary_file_path),
                   scope_file_path=str(scope_file_path),
                   issues_file=str(issues_file))
 
 
-def audit_prompt(*, round_num: int, scope_file_path: str | Path,
+def code_quality_reviewer_prompt(*, round_num: int, summary_file_path: str | Path,
+                                scope_file_path: str | Path,
+                                issues_file: str | Path) -> str:
+    return render("code-quality-reviewer",
+                  round_num=round_num,
+                  summary_file_path=str(summary_file_path),
+                  scope_file_path=str(scope_file_path),
+                  issues_file=str(issues_file))
+
+
+def arch_reviewer_prompt(*, round_num: int, summary_file_path: str | Path,
+                                scope_file_path: str | Path,
+                                issues_file: str | Path) -> str:
+    return render("arch-reviewer",
+                  round_num=round_num,
+                  summary_file_path=str(summary_file_path),
+                  scope_file_path=str(scope_file_path),
+                  issues_file=str(issues_file))
+
+
+def security_reviewer_prompt(*, round_num: int, scope_file_path: str | Path,
                  summary_file_path: str | Path,
                  issues_file: str | Path) -> str:
-    return render("audit",
+    return render("security-reviewer",
                   round_num=round_num,
                   scope_file_path=str(scope_file_path),
                   summary_file_path=str(summary_file_path),
@@ -132,8 +186,8 @@ def evolver_prompt(*, fail_logs: list[str], current_design: str,
                   worktree_path=worktree_path)
 
 
-def meta_audit_prompt(*, current_design: str, diff: str, fail_logs: str) -> str:
-    return render("meta_audit",
+def meta_auditor_prompt(*, current_design: str, diff: str, fail_logs: str) -> str:
+    return render("meta-auditor",
                   current_design=current_design,
                   diff=diff,
                   fail_logs=fail_logs)

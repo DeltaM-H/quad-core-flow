@@ -68,7 +68,10 @@ class Config:
     pilot_timeout: int = 120
 
     # ── Claude model overrides (empty = default) ──
-    review_model: str = "sonnet"
+    review_model_api: str = "sonnet"
+    review_model_design: str = "sonnet"
+    review_model_quality: str = "sonnet"
+    review_model_arch: str = "sonnet"
     audit_model: str = ""
 
     # ── Token budget ──
@@ -94,6 +97,9 @@ class Config:
 
     # ── Unified event log ──
     events_file: Path = Path("/tmp/qcf-events.jsonl")
+
+    # ── Agent prompts directory ──
+    prompts_dir: Path = Path(".claude/agents")
 
     # ── Evolution / Self-Improvement ──
     evolution_enabled: bool = True
@@ -123,8 +129,11 @@ class Config:
 
     def model_for(self, stage: str) -> str | None:
         return {
-            "review": self.review_model,
-            "audit": self.audit_model,
+            "security-reviewer": self.audit_model,
+            "api-reviewer": self.review_model_api,
+            "design-reviewer": self.review_model_design,
+            "code-quality-reviewer": self.review_model_quality,
+            "arch-reviewer": self.review_model_arch,
         }.get(stage) or None
 
     def commit_message(self, round_num: int) -> str:
@@ -251,9 +260,25 @@ class Config:
 
         # Models
         models = data.get("models", {})
+        # Per-perspective review models (individual takes priority)
+        key_map = {
+            "api-reviewer": "review_model_api",
+            "design-reviewer": "review_model_design",
+            "code-quality-reviewer": "review_model_quality",
+            "arch-reviewer": "review_model_arch",
+        }
+        for key, attr in key_map.items():
+            if key in models:
+                setattr(cfg, attr, models[key])
+        # Fallback: single "review" sets all perspectives
         if "review" in models:
-            cfg.review_model = models["review"]
-        if "audit" in models:
+            for p in ("api", "design", "quality", "arch"):
+                attr = f"review_model_{p}"
+                if getattr(cfg, attr) == "sonnet":  # only if not individually overridden
+                    setattr(cfg, attr, models["review"])
+        if "security-reviewer" in models:
+            cfg.audit_model = models["security-reviewer"]
+        elif "audit" in models:
             cfg.audit_model = models["audit"]
 
         # Commit
@@ -330,7 +355,8 @@ class Config:
                           "issues_file", "review_issues_file", "audit_issues_file",
                           "pilot_task_file", "summary_pack_file",
                           "scope_file", "summary_file",
-                          "events_file"):
+                          "events_file",
+                          "prompts_dir"):
             val: Path = getattr(self, attr_name)
             if not val.is_absolute():
                 setattr(self, attr_name, anchor / val)

@@ -1,3 +1,11 @@
+---
+name: implement
+description: "QCF Implementer (Core 2): write production code from tech-lead design docs, producing scope.json and summary.md artifacts for review."
+tools: "Write, Read, Edit, Bash"
+model: sonnet
+color: cyan
+---
+
 {% if issues_content is defined and issues_content %}
 请根据以下问题列表修复代码。
 

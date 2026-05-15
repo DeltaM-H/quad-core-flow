@@ -395,25 +395,25 @@ def _review_issues_path(cfg: Config, round_num: int, perspective: str) -> Path:
     return cfg.log_dir / f"review-{perspective}-issues-{round_num:02d}.txt"
 
 
-async def _run_review_api(
+async def _run_api_reviewer(
     cfg: Config,
     round_num: int,
     summary_file_path: Path,
     scope_file_path: Path,
 ) -> ReviewOutput:
     """API Review perspective (P0-2): interface signatures, backward compatibility."""
-    issues_file = _review_issues_path(cfg, round_num, "api")
-    prompt_text = prompts.api_review_prompt(
+    issues_file = _review_issues_path(cfg, round_num, "api-reviewer")
+    prompt_text = prompts.api_reviewer_prompt(
         round_num=round_num,
         summary_file_path=str(summary_file_path),
         scope_file_path=str(scope_file_path),
         issues_file=str(issues_file),
     )
-    log_path = cfg.log_dir / f"qcf-review-api-{round_num:02d}.log"
+    log_path = cfg.log_dir / f"qcf-api-reviewer-{round_num:02d}.log"
     result_text, metrics = await run_claude(
         prompt_text, log_path,
         timeout=cfg.review_timeout,
-        model=cfg.model_for("review"),
+        model=cfg.model_for("api-reviewer"),
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
         max_output_tokens=cfg.max_output_tokens,
@@ -442,32 +442,32 @@ async def _run_review_api(
     print(f"  ⚡ API Review: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
     print(f"     ↳ {summary[:120]}")
 
-    _emit_event(cfg, "verdict", stage="review_api", round=round_num,
+    _emit_event(cfg, "verdict", stage="api-reviewer", round=round_num,
                 result=result, summary=summary[:120] if summary else "")
 
     return ReviewOutput(result=result, summary=summary, issues=issues,
                          summary_feedback=summary_feedback)
 
 
-async def _run_review_design(
+async def _run_design_reviewer(
     cfg: Config,
     round_num: int,
     summary_file_path: Path,
     scope_file_path: Path,
 ) -> ReviewOutput:
     """Design Review perspective (P0-2): decision rationale, data flow, abstraction."""
-    issues_file = _review_issues_path(cfg, round_num, "design")
-    prompt_text = prompts.design_review_prompt(
+    issues_file = _review_issues_path(cfg, round_num, "design-reviewer")
+    prompt_text = prompts.design_reviewer_prompt(
         round_num=round_num,
         summary_file_path=str(summary_file_path),
         scope_file_path=str(scope_file_path),
         issues_file=str(issues_file),
     )
-    log_path = cfg.log_dir / f"qcf-review-design-{round_num:02d}.log"
+    log_path = cfg.log_dir / f"qcf-design-reviewer-{round_num:02d}.log"
     result_text, metrics = await run_claude(
         prompt_text, log_path,
         timeout=cfg.review_timeout,
-        model=cfg.model_for("review"),
+        model=cfg.model_for("design-reviewer"),
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
         max_output_tokens=cfg.max_output_tokens,
@@ -496,46 +496,149 @@ async def _run_review_design(
     print(f"  ⚡ Design Review: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
     print(f"     ↳ {summary[:120]}")
 
-    _emit_event(cfg, "verdict", stage="review_design", round=round_num,
+    _emit_event(cfg, "verdict", stage="design-reviewer", round=round_num,
                 result=result, summary=summary[:120] if summary else "")
 
     return ReviewOutput(result=result, summary=summary, issues=issues,
                          summary_feedback=summary_feedback)
 
 
-def _merge_review_results(api_review: ReviewOutput, design_review: ReviewOutput) -> ReviewOutput:
-    """Merge two review perspectives into a single ReviewOutput.
+async def _run_code_quality_reviewer(
+    cfg: Config,
+    round_num: int,
+    summary_file_path: Path,
+    scope_file_path: Path,
+) -> ReviewOutput:
+    """Code Quality Review perspective: naming, DRY, complexity, error handling."""
+    issues_file = _review_issues_path(cfg, round_num, "code-quality-reviewer")
+    prompt_text = prompts.code_quality_reviewer_prompt(
+        round_num=round_num,
+        summary_file_path=str(summary_file_path),
+        scope_file_path=str(scope_file_path),
+        issues_file=str(issues_file),
+    )
+    log_path = cfg.log_dir / f"qcf-code-quality-reviewer-{round_num:02d}.log"
+    result_text, metrics = await run_claude(
+        prompt_text, log_path,
+        timeout=cfg.review_timeout,
+        model=cfg.model_for("code-quality-reviewer"),
+        allowed_tools=cfg.allowed_tools,
+        output_format=cfg.output_format,
+        max_output_tokens=cfg.max_output_tokens,
+        thinking_budget=cfg.thinking_budget,
+        cwd=cfg.root_dir,
+    )
 
-    - If both PASS → overall PASS
-    - If either FAIL → overall FAIL, issues merged from both
+    result, summary = extract_review_result(result_text)
+    if not result:
+        result = "FAIL"
+        summary = summary or "[结果解析失败]"
+
+    issues: list[Issue] = []
+    if issues_file.exists():
+        for line in issues_file.read_text().strip().split("\n"):
+            issue = Issue.from_line(line)
+            if issue:
+                issues.append(issue)
+
+    from .models import extract_summary_feedback
+    summary_feedback = extract_summary_feedback(result_text)
+    if summary_feedback:
+        print(f"     → Code Quality SUMMARY_FEEDBACK: {summary_feedback[:120]}")
+
+    colored_res = _color_result(result) + (_red(" | TIMEOUT") if metrics.timed_out else "")
+    print(f"  ⚡ Code Quality: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
+    print(f"     ↳ {summary[:120]}")
+
+    _emit_event(cfg, "verdict", stage="code-quality-reviewer", round=round_num,
+                result=result, summary=summary[:120] if summary else "")
+
+    return ReviewOutput(result=result, summary=summary, issues=issues,
+                         summary_feedback=summary_feedback)
+
+
+async def _run_arch_reviewer(
+    cfg: Config,
+    round_num: int,
+    summary_file_path: Path,
+    scope_file_path: Path,
+) -> ReviewOutput:
+    """Architecture Review perspective: module boundaries, deps direction, conventions."""
+    issues_file = _review_issues_path(cfg, round_num, "arch-reviewer")
+    prompt_text = prompts.arch_reviewer_prompt(
+        round_num=round_num,
+        summary_file_path=str(summary_file_path),
+        scope_file_path=str(scope_file_path),
+        issues_file=str(issues_file),
+    )
+    log_path = cfg.log_dir / f"qcf-arch-reviewer-{round_num:02d}.log"
+    result_text, metrics = await run_claude(
+        prompt_text, log_path,
+        timeout=cfg.review_timeout,
+        model=cfg.model_for("arch-reviewer"),
+        allowed_tools=cfg.allowed_tools,
+        output_format=cfg.output_format,
+        max_output_tokens=cfg.max_output_tokens,
+        thinking_budget=cfg.thinking_budget,
+        cwd=cfg.root_dir,
+    )
+
+    result, summary = extract_review_result(result_text)
+    if not result:
+        result = "FAIL"
+        summary = summary or "[结果解析失败]"
+
+    issues: list[Issue] = []
+    if issues_file.exists():
+        for line in issues_file.read_text().strip().split("\n"):
+            issue = Issue.from_line(line)
+            if issue:
+                issues.append(issue)
+
+    from .models import extract_summary_feedback
+    summary_feedback = extract_summary_feedback(result_text)
+    if summary_feedback:
+        print(f"     → Architecture Review SUMMARY_FEEDBACK: {summary_feedback[:120]}")
+
+    colored_res = _color_result(result) + (_red(" | TIMEOUT") if metrics.timed_out else "")
+    print(f"  ⚡ Architecture Review: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
+    print(f"     ↳ {summary[:120]}")
+
+    _emit_event(cfg, "verdict", stage="arch-reviewer", round=round_num,
+                result=result, summary=summary[:120] if summary else "")
+
+    return ReviewOutput(result=result, summary=summary, issues=issues,
+                         summary_feedback=summary_feedback)
+
+
+def _merge_review_results(*reviews: ReviewOutput) -> ReviewOutput:
+    """Merge N review perspectives into a single ReviewOutput.
+
+    All PASS → overall PASS; any FAIL → overall FAIL, issues merged.
+    Position determines label: 0=API, 1=Design, 2=Quality, 3=Arch.
     """
+    labels = ["API", "Design", "Quality", "Arch"]
     all_issues: list[Issue] = []
-    all_issues.extend(api_review.issues)
-    all_issues.extend(design_review.issues)
+    merged_summary_parts: list[str] = []
+    feedback_parts: list[str] = []
+    components: list[ReviewComponent] = []
 
-    merged_result = "PASS" if (api_review.result == "PASS" and design_review.result == "PASS") else "FAIL"
+    merged_result = "PASS"
+    for i, r in enumerate(reviews):
+        label = labels[i] if i < len(labels) else f"Review-{i}"
+        all_issues.extend(r.issues)
+        if r.result != "PASS":
+            merged_result = "FAIL"
+        if r.summary:
+            merged_summary_parts.append(f"[{label}] {r.summary}")
+        if r.summary_feedback:
+            feedback_parts.append(f"[{label}] {r.summary_feedback}")
+        components.append(
+            ReviewComponent(perspective=label.lower(), result=r.result,
+                             issues=r.issues, summary=r.summary))
 
-    merged_summary_parts = []
-    if api_review.summary:
-        merged_summary_parts.append(f"[API] {api_review.summary}")
-    if design_review.summary:
-        merged_summary_parts.append(f"[Design] {design_review.summary}")
     merged_summary = " | ".join(merged_summary_parts)
-
-    # Collect summary feedback from both
-    feedback_parts = []
-    if api_review.summary_feedback:
-        feedback_parts.append(f"[API] {api_review.summary_feedback}")
-    if design_review.summary_feedback:
-        feedback_parts.append(f"[Design] {design_review.summary_feedback}")
     merged_feedback = " | ".join(feedback_parts) if feedback_parts else None
-
-    components = [
-        ReviewComponent(perspective="api", result=api_review.result,
-                         issues=api_review.issues, summary=api_review.summary),
-        ReviewComponent(perspective="design", result=design_review.result,
-                         issues=design_review.issues, summary=design_review.summary),
-    ]
 
     return ReviewOutput(
         result=merged_result,
@@ -553,17 +656,17 @@ async def _run_audit(
     summary_file_path: Path,
 ) -> AuditOutput:
     _emit_event(cfg, "stage.start", stage="audit", round=round_num)
-    prompt_text = prompts.audit_prompt(
+    prompt_text = prompts.security_reviewer_prompt(
         round_num=round_num,
         scope_file_path=str(scope_file_path),
         summary_file_path=str(summary_file_path),
         issues_file=str(cfg.audit_issues_file),
     )
-    log_path = cfg.log_dir / f"qcf-audit-{round_num:02d}.log"
+    log_path = cfg.log_dir / f"qcf-security-reviewer-{round_num:02d}.log"
     result_text, metrics = await run_claude(
         prompt_text, log_path,
         timeout=cfg.audit_timeout,
-        model=cfg.model_for("audit"),
+        model=cfg.model_for("security-reviewer"),
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
         max_output_tokens=cfg.max_output_tokens,
@@ -590,7 +693,7 @@ async def _run_audit(
     print(f"  ⚡ Audit: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
     print(f"     ↳ {summary[:120]}")
 
-    _emit_event(cfg, "stage.end", stage="audit", round=round_num,
+    _emit_event(cfg, "stage.end", stage="security-reviewer", round=round_num,
                 result=result, action_suggestion=action_suggestion,
                 tokens_in=metrics.input_tokens, tokens_out=metrics.output_tokens)
 
@@ -970,6 +1073,10 @@ class QCFEngine:
         self.config = config
         self.reporter = reporter or StdoutReporter()
         self.hooks = hooks or config.build_hooks()
+
+        # Load agent prompts from project .claude/agents/
+        prompts.set_template_dir(config.prompts_dir)
+
         self.overview = RoundsOverview()
         self._consecutive_fails = 0
         self._no_commit = False
@@ -1150,25 +1257,32 @@ class QCFEngine:
                 next_action_hint=f"[Round {round_num}/{max_rounds}] Reviewing + auditing")
             _emit_event(cfg, "stage.start", stage="review+audit", round=round_num)
 
-            # Run API review, design review, and audit in parallel (P0-2)
-            review_api_task = _run_review_api(cfg, round_num=round_num,
+            # Run 4 review perspectives + audit in parallel
+            review_api_task = _run_api_reviewer(cfg, round_num=round_num,
                                                summary_file_path=cfg.summary_file,
                                                scope_file_path=cfg.scope_file)
-            review_design_task = _run_review_design(cfg, round_num=round_num,
+            review_design_task = _run_design_reviewer(cfg, round_num=round_num,
                                                      summary_file_path=cfg.summary_file,
                                                      scope_file_path=cfg.scope_file)
+            review_quality_task = _run_code_quality_reviewer(cfg, round_num=round_num,
+                                                            summary_file_path=cfg.summary_file,
+                                                            scope_file_path=cfg.scope_file)
+            review_arch_task = _run_arch_reviewer(cfg, round_num=round_num,
+                                                         summary_file_path=cfg.summary_file,
+                                                         scope_file_path=cfg.scope_file)
             audit_task = _run_audit(cfg, round_num=round_num,
                                      scope_file_path=cfg.scope_file,
                                      summary_file_path=cfg.summary_file)
-            review_api, review_design, audit = await asyncio.gather(
-                review_api_task, review_design_task, audit_task)
+            review_api, review_design, review_quality, review_arch, audit = await asyncio.gather(
+                review_api_task, review_design_task, review_quality_task, review_arch_task, audit_task)  # noqa: F841  # variables re-bound by merge
 
             # Merge review perspectives
-            review = _merge_review_results(review_api, review_design)
+            review = _merge_review_results(review_api, review_design, review_quality, review_arch)
 
             last_review, last_audit = review, audit
 
-            print(f"[QCF] stage: review(api={review_api.result}, design={review_design.result}) → {review.result}")
+            print(f"[QCF] stage: review(api={review_api.result}, design={review_design.result}, "
+                  f"quality={review_quality.result}, arch={review_arch.result}) → {review.result}")
             print(f"[QCF] stage: audit → {audit.result}")
             print(f"[QCF] action_suggestion → {audit.action_suggestion}")
 
