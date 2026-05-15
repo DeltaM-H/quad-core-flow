@@ -103,6 +103,10 @@ def _git(cmd: list[str], cwd: Path | None = None) -> int:
     return subprocess.run(cmd, cwd=cwd).returncode
 
 
+# ── Pilot direction file (written by /pilot skill, consumed one-shot) ──
+_PILOT_DIRECTION_FILE = Path("/tmp/qcf-pilot-direction.txt")
+
+
 # ══════════════════════════════════════════════════════════════
 # Unified event helper (replaces legacy _write_status)
 # ══════════════════════════════════════════════════════════════
@@ -292,7 +296,8 @@ async def _run_tech_lead(cfg: Config, task_path: Path, summary_pack: str = "") -
 
 
 async def _run_pilot(cfg: Config, last_task: str = "",
-                     round_history: list[str] | None = None) -> tuple[str, str]:
+                     round_history: list[str] | None = None,
+                     user_direction: str = "") -> tuple[str, str]:
     """Core 5: Pilot — assess project, extract structured summary, decide next step.
 
     Returns:
@@ -302,6 +307,14 @@ async def _run_pilot(cfg: Config, last_task: str = "",
     """
     _emit_event(cfg, "stage.start", stage="pilot", round=0)
 
+    # Read one-shot direction from /pilot skill (if any), merge with param
+    direction = user_direction
+    if _PILOT_DIRECTION_FILE.exists():
+        skill_direction = _PILOT_DIRECTION_FILE.read_text().strip()
+        if skill_direction:
+            direction = skill_direction if not direction else f"{direction}; {skill_direction}"
+        _PILOT_DIRECTION_FILE.unlink(missing_ok=True)
+
     tree = prompts.project_tree(cwd=cfg.root_dir, max_depth=4)
     cfg.task_dir.mkdir(parents=True, exist_ok=True)
 
@@ -310,6 +323,7 @@ async def _run_pilot(cfg: Config, last_task: str = "",
         last_task=last_task,
         round_history=round_history or [],
         task_output_path=str(cfg.pilot_task_file),
+        user_direction=direction,
     )
     log_path = cfg.log_dir / "qcf-pilot.log"
     result_text, metrics = await run_claude(
@@ -1428,7 +1442,8 @@ class QCFEngine:
         except Exception as e:
             print(f"  Evolution error: {e}")
 
-    async def run_continuous(self, task_path: Path, max_iterations: int = 10) -> None:
+    async def run_continuous(self, task_path: Path, max_iterations: int = 10,
+                              user_direction: str = "") -> None:
         """Outer loop: Tech-Lead → inner loop → Pilot → repeat until steady state."""
         cfg = self.config
         print(f"\n{_bold('=' * 50)}")
@@ -1479,6 +1494,7 @@ class QCFEngine:
                 cfg,
                 last_task=current_task.name,
                 round_history=round_history,
+                user_direction=user_direction,
             )
 
             if verdict == "STEADY_STATE":

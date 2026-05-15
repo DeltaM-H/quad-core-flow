@@ -11,6 +11,14 @@ color: green
 
 ## Input Contract
 
+{% if user_direction %}
+
+## 用户指令
+
+{{ user_direction }}
+
+{% endif %}
+
 - 项目目录树 — 当前项目结构
 - 上一轮结果 — 刚完成的任务名称
 - 轮次历史 — 最近各 stage 的结果列表
