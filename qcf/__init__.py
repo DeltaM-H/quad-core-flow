@@ -1,6 +1,6 @@
 """pipeline-cli: Agent closed-loop pipeline with Claude."""
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 from .config import Config, load_config
 from .engine import QCFEngine

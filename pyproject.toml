@@ -27,7 +27,7 @@ qcf = ["default_config.toml"]
 version = {attr = "qcf.__version__"}
 
 [tool.bumpversion]
-current_version = "0.4.0"
+current_version = "0.5.0"
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize = ["{major}.{minor}.{patch}"]
 
