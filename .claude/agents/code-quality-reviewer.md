@@ -14,14 +14,14 @@ color: yellow
 使用 Read 工具读取：
 
 1. 范围文件 {{ scope_file_path }}，获取 `changed_files` 变更列表
-2. 摘要文件 {{ summary_file_path }} 的 **"接口签名"** 和 **"设计决策摘要"** 部分
+2. 摘要文件 {{ summary_file_path }} 的 **"代码质量关注点"** 部分
 
 然后读取 `changed_files` 中列出的文件进行逐行审查。
 
 ## Execution Phases
 
 1. **Read scope** — 获取变更文件列表和范围边界
-2. **Read summary** — 理解接口签名和设计决策上下文
+2. **Read summary** — 理解代码质量关注点
 3. **Read changed files** — 读取实际代码，逐文件审查
 4. **Analyze** — 评估命名、复杂度、重复、错误处理
 5. **Report** — 输出审查结论 (PASS/FAIL)

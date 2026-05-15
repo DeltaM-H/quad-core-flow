@@ -14,13 +14,13 @@ color: yellow
 使用 Read 工具读取：
 
 1. 范围文件 {{ scope_file_path }}，获取 `changed_files`、`dependencies`、`out_of_scope`
-2. 摘要文件 {{ summary_file_path }} 的 **"设计决策摘要"** 部分
+2. 摘要文件 {{ summary_file_path }} 的 **"架构影响分析"** 部分
 3. 变更文件的实际代码（`changed_files` 中的关键文件）
 
 ## Execution Phases
 
 1. **Read scope** — 理解变更范围、新增依赖、外延声明
-2. **Read design decisions** — 理解方案选择和架构意图
+2. **Read arch impact** — 理解架构影响分析
 3. **Read key files** — 读取核心变更文件的代码
 4. **Analyze** — 评估模块边界、依赖方向、模式一致性
 5. **Report** — 输出审查结论 (PASS/FAIL)

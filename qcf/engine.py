@@ -121,7 +121,7 @@ def _emit_event(cfg: Config, event_type: str, **data: Any) -> None:
 # ══════════════════════════════════════════════════════════════
 
 _REQUIRED_SCOPE_KEYS = ("changed_files", "dependencies", "out_of_scope")
-_REQUIRED_SUMMARY_HEADERS = ("接口签名", "安全敏感代码路径", "设计决策摘要")
+_REQUIRED_SUMMARY_HEADERS = ("接口签名", "安全敏感代码路径", "设计决策摘要", "代码质量关注点", "架构影响分析")
 
 
 def _validate_artifacts(cfg: Config) -> tuple[bool, list[str]]:
