@@ -50,7 +50,6 @@
 [claude]
 # allowed_tools = ["Write", "Read", "Edit", "Bash"]
 # output_format = "json"
-# max_output_tokens = 8192       # Cap output tokens per stage (0 = unlimited)
 # thinking_budget = 4096         # Thinking budget (optional)
 
 [hooks]

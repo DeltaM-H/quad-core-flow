@@ -231,7 +231,6 @@ async def _run_implement(
         model=cfg.model_for("implement"),
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
-        max_output_tokens=cfg.max_output_tokens,
         thinking_budget=cfg.thinking_budget,
         cwd=cfg.root_dir,
     )
@@ -280,7 +279,6 @@ async def _run_tech_lead(cfg: Config, task_path: Path, summary_pack: str = "") -
         model=cfg.model_for("tech-lead"),
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
-        max_output_tokens=cfg.max_output_tokens,
         thinking_budget=cfg.thinking_budget,
         cwd=cfg.root_dir,
     )
@@ -335,7 +333,6 @@ async def _run_pilot(cfg: Config, last_task: str = "",
         model=cfg.model_for("pilot"),
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
-        max_output_tokens=cfg.max_output_tokens,
         thinking_budget=cfg.thinking_budget,
         cwd=cfg.root_dir,
     )
@@ -396,7 +393,6 @@ async def _run_fix(
         model=cfg.model_for("fix"),
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
-        max_output_tokens=cfg.max_output_tokens,
         thinking_budget=cfg.thinking_budget,
         cwd=cfg.root_dir,
     )
@@ -434,7 +430,6 @@ async def _run_api_reviewer(
         model=cfg.model_for("api-reviewer"),
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
-        max_output_tokens=cfg.max_output_tokens,
         thinking_budget=cfg.thinking_budget,
         cwd=cfg.root_dir,
     )
@@ -488,7 +483,6 @@ async def _run_code_quality_reviewer(
         model=cfg.model_for("code-quality-reviewer"),
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
-        max_output_tokens=cfg.max_output_tokens,
         thinking_budget=cfg.thinking_budget,
         cwd=cfg.root_dir,
     )
@@ -540,7 +534,6 @@ async def _run_arch_reviewer(
         model=cfg.model_for("arch-reviewer"),
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
-        max_output_tokens=cfg.max_output_tokens,
         thinking_budget=cfg.thinking_budget,
         cwd=cfg.root_dir,
     )
@@ -625,7 +618,6 @@ async def _run_audit(
         model=cfg.model_for("security-reviewer"),
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
-        max_output_tokens=cfg.max_output_tokens,
         thinking_budget=cfg.thinking_budget,
         cwd=cfg.root_dir,
     )

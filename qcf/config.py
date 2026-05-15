@@ -76,13 +76,10 @@ class Config:
     fix_model: str = ""
     pilot_model: str = ""
 
-    # ── Token budget ──
-    max_output_tokens: int = 8192
-    thinking_budget: int | None = None
-
     # ── Claude CLI flags ──
     allowed_tools: list[str] = field(default_factory=lambda: ["Write", "Read", "Edit", "Bash"])
     output_format: str = "json"
+    thinking_budget: int | None = None
 
     # ── Commit behavior ──
     commit_enabled: bool = True
@@ -303,8 +300,6 @@ class Config:
             cfg.allowed_tools = claude["allowed_tools"]
         if "output_format" in claude:
             cfg.output_format = claude["output_format"]
-        if "max_output_tokens" in claude:
-            cfg.max_output_tokens = int(claude["max_output_tokens"])
         if "thinking_budget" in claude:
             cfg.thinking_budget = int(claude["thinking_budget"])
 

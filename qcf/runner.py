@@ -43,7 +43,6 @@ async def run_claude(
     model: str | None = None,
     allowed_tools: list[str] | None = None,
     output_format: str = "json",
-    max_output_tokens: int | None = None,
     thinking_budget: int | None = None,
     cwd: Path | None = None,
 ) -> tuple[str, StageMetrics]:
@@ -69,11 +68,6 @@ async def run_claude(
 
     if model:
         cmd.extend(["--model", model])
-
-    if max_output_tokens:
-        # NOTE: current Claude Code CLI does not support --max-tokens; this will be
-        # enabled once the CLI adds the flag. The value is plumbed through the entire
-        # pipeline so nothing needs changing when the CLI catches up.
 
     if thinking_budget:
         cmd.extend(["--thinking-budget", str(thinking_budget)])
