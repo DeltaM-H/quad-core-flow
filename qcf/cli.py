@@ -60,7 +60,7 @@ def _cmd_init(args: argparse.Namespace) -> None:
         ("Tech-Lead docs", cfg.tech_lead_dir),
         ("Coder workspace", cfg.coder_dir),
         ("Code-Reviewer docs", cfg.code_reviewer_dir),
-        ("Security-Reviewer docs", cfg.security_reviewer_dir),
+        ("Security-Reviewer docs", cfg.out_audit_dir),
         ("Fail reports", cfg.fail_dir),
         ("Task files", cfg.task_dir),
     ]

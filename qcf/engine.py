@@ -277,6 +277,7 @@ async def _run_tech_lead(cfg: Config, task_path: Path, summary_pack: str = "") -
     result_text, metrics = await run_claude(
         prompt_text, log_path,
         timeout=cfg.tech_lead_timeout,
+        model=cfg.model_for("tech-lead"),
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
         max_output_tokens=cfg.max_output_tokens,
@@ -331,6 +332,7 @@ async def _run_pilot(cfg: Config, last_task: str = "",
     result_text, metrics = await run_claude(
         prompt_text, log_path,
         timeout=cfg.pilot_timeout,
+        model=cfg.model_for("pilot"),
         allowed_tools=cfg.allowed_tools,
         output_format=cfg.output_format,
         max_output_tokens=cfg.max_output_tokens,

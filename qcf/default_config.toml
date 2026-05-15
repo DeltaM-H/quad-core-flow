@@ -18,15 +18,18 @@
 # "api-reviewer" = "sonnet"
 # "code-quality-reviewer" = "sonnet"
 # "arch-reviewer" = "sonnet"
-# "review" sets all perspectives as fallback:
-# review = "sonnet"
+# "tech-lead" = ""
+# "implement" = ""
+# "fix" = ""
+# "pilot" = ""
 # "security-reviewer" = ""
+# "review" sets api-reviewer, quality-reviewer, arch-reviewer as fallback:
+# review = "sonnet"
 
 [paths]
 # 所有路径相对于 workspace.docs_dir，除非是绝对路径
 # tech_lead = "tech-lead"
 # code_reviewer = "code-reviewer"
-# security_reviewer = "security-reviewer"
 # coder = "coder"
 # out_review = "code-reviewer"
 # out_audit = "security-reviewer"

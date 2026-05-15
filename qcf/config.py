@@ -38,7 +38,6 @@ class Config:
     # ── Paths (resolved relative to docs_dir) ──
     tech_lead_dir: Path = Path("output/docs/tech-lead")
     code_reviewer_dir: Path = Path("output/docs/code-reviewer")
-    security_reviewer_dir: Path = Path("output/docs/security-reviewer")
     coder_dir: Path = Path("output/docs/coder")
     out_review_dir: Path = Path("output/docs/code-reviewer")
     out_audit_dir: Path = Path("output/docs/security-reviewer")
@@ -72,6 +71,10 @@ class Config:
     review_model_quality: str = "sonnet"
     review_model_arch: str = "sonnet"
     audit_model: str = ""
+    tech_lead_model: str = ""
+    implement_model: str = ""
+    fix_model: str = ""
+    pilot_model: str = ""
 
     # ── Token budget ──
     max_output_tokens: int = 8192
@@ -132,6 +135,10 @@ class Config:
             "api-reviewer": self.review_model_api,
             "code-quality-reviewer": self.review_model_quality,
             "arch-reviewer": self.review_model_arch,
+            "tech-lead": self.tech_lead_model,
+            "implement": self.implement_model,
+            "fix": self.fix_model,
+            "pilot": self.pilot_model,
         }.get(stage) or None
 
     def commit_message(self, round_num: int) -> str:
@@ -229,7 +236,6 @@ class Config:
         mapping = {
             "tech_lead": "tech_lead_dir",
             "code_reviewer": "code_reviewer_dir",
-            "security_reviewer": "security_reviewer_dir",
             "coder": "coder_dir",
             "out_review": "out_review_dir",
             "out_audit": "out_audit_dir",
@@ -263,6 +269,10 @@ class Config:
             "api-reviewer": "review_model_api",
             "code-quality-reviewer": "review_model_quality",
             "arch-reviewer": "review_model_arch",
+            "tech-lead": "tech_lead_model",
+            "implement": "implement_model",
+            "fix": "fix_model",
+            "pilot": "pilot_model",
         }
         for key, attr in key_map.items():
             if key in models:
@@ -346,7 +356,7 @@ class Config:
     def _resolve_paths(self, anchor: Path) -> None:
         """Ensure all path fields are absolute, resolving relative ones to *anchor*."""
         for attr_name in ("status_file", "log_dir",
-                          "tech_lead_dir", "code_reviewer_dir", "security_reviewer_dir",
+                          "tech_lead_dir", "code_reviewer_dir",
                           "coder_dir", "out_review_dir", "out_audit_dir", "fail_dir",
                           "task_dir",
                           "issues_file", "review_issues_file", "audit_issues_file",
