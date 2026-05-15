@@ -1,106 +1,94 @@
 # Quad-Core Flow (QCF)
 
-**QCF** is a multi-agent AI pipeline that automates software development. Given a task description, it orchestrates six Claude agents in sequence — Tech-Lead → Implement/Fix → Review → Audit → Pilot + Evolver — each playing a specialized role to go from requirements to production-ready code.
+**QCF** is a multi-agent AI pipeline that automates software development. Given a task description, it orchestrates Claude agents through a structured loop — Tech-Lead → Architecture Review → Implement/Fix → API + Quality Review → Security Audit → Pilot — producing production-ready code from requirements.
 
 ## Pipeline
 
 ```
-                          ┌─────────────────────────────────────────┐
-  Task ──► Tech-Lead ────► Coder ──► Review ──► Audit ──► Done     │
-                 ▲        (Impl/        │          │                │
-                 │          Fix)        │          │                │
-                 │           ▲          ▼          ▼               │
-                 │           │    Review         Audit              │
-                 │           │    PASS?         PASS?               │
-                 │           └───────┴─────┬──────┘                 │
-                 │                        │                        │
-                 │                   Both PASS                     │
-                 │               → Commit & Done                   │
-                 │                        │                        │
-                 │                  (or FAIL → fix loop)            │
-                 └────────────────────────┘────────────────────────┘
-                                      │
-                                    Pilot
-                                      │
-                              ┌───────┴───────┐
-                              │               │
-                         Steady State    New Task
-                                        ─► next iteration
+                           ┌───────────────────────────────────────┐
+  Task ──► Tech-Lead ─────► Arch-Review ──► Coder ──► Review ──► Audit
+                  ▲              │          (Impl/       │          │
+                  │              │            Fix)       │          │
+                  │              │          [API+Quality]│          │
+                  │              │               ▲       │          │
+                  │              ▼               │   PASS/FAIL  PASS/FAIL
+                  │          PASS/FAIL            └───┬────┬─────┘
+                  │                                   │    │
+                  └────────────────────────────────────┘    │
+                                                    │      │
+                                               ── PASS ────┘
+                                                   │
+                                               Commit
+                                                   │
+                                             (or FAIL → fix loop)
 ```
 
-### Cores
-
-| Core   | Agent             | Role                                                                       |
-| ------ | ----------------- | -------------------------------------------------------------------------- |
-| **1**  | Tech-Lead         | Analyze requirements, explore project structure, produce a design document |
-| **2**  | Coder (Implement) | Read the design doc and implement the code                                 |
-| **2b** | Fix               | Read issues from Review/Audit and repair the code                          |
-| **3**  | Reviewer          | Check correctness, architecture, edge cases, naming, completeness          |
-| **4**  | Auditor           | Security audit: SQLi, XSS, CSRF, auth, info leaks, input validation        |
-| **5**  | Pilot             | Assess project state, decide if another iteration is needed                |
-| **6**  | Evolver           | Analyze pipeline failures and self-modify QCF code (with Meta-Audit gate)  |
-
-Review and Audit run **in parallel** each round. If either fails, issues are fed to the Fix agent for the next round (up to `max_rounds`).
-
-When the pipeline itself fails, the **Evolver** + **Meta-Audit** loop can be triggered to analyze root causes and self-modify QCF's code in an isolated git worktree sandbox.
-
-## Features
-
-- **Auto mode**: one command from task to done — Tech-Lead → inner loop → commit
-- **Continuous mode**: after completion, Pilot re-evaluates the project and spawns new tasks automatically
-- **Self-evolution**: Evolver agent analyzes pipeline failures and fixes QCF code, gated by Meta-Audit validation
-- **Watch mode**: monitor the `tech-lead/` directory for new design documents
-- **Detached mode**: run the pipeline in the background, poll status via JSON
-- **Configurable**: timeouts, models (per stage), Claude parameters, commit messages, hooks
-- **Hook system**: shell scripts or inline commands at every lifecycle event (post-start, on-passed, on-failed, etc.)
-- **Auto-commit**: on passing all checks, results are committed to git
-- **Status monitoring**: real-time status via `qcf status --watch`
+After the inner loop passes, **Pilot** assesses the project and either declares steady state or produces a new task for the next iteration.
 
 ## Quick Start
 
 ```bash
-# Install
 pip install -e .
-
-# Initialize config and directory structure
 qcf init
-
-# Write a task
 echo "# my feature" > tasks/my-task.md
-
-# Run the full pipeline (auto mode)
-qcf auto tasks/my-task.md
-
-# Continuous mode — automatically discovers new tasks
-qcf auto tasks/my-task.md --continuous
+qcf auto tasks/my-task.md            # full pipeline
+qcf auto tasks/my-task.md -c         # continuous (Pilot loop)
 ```
+
+## Agents
+
+| Agent             | Stage     | Role                                                  |
+| ----------------- | --------- | ----------------------------------------------------- |
+| Tech-Lead         | Pre-loop  | Analyze requirements, produce a design document       |
+| Arch-Reviewer     | Pre-loop  | Review design doc for module boundaries, architecture |
+| Coder (Implement) | Loop      | Implement code from the design doc                    |
+| Fix               | Loop      | Repair code from Review/Audit issues                  |
+| API Reviewer      | Loop      | Check interface signatures, backward compatibility    |
+| Quality Reviewer  | Loop      | Check naming, DRY, complexity, error handling         |
+| Auditor           | Loop      | Security audit: OWASP Top 10                          |
+| Pilot             | Post-loop | Assess project state, decide next action              |
+| Evolver           | Escalate  | Analyze pipeline failures and self-modify QCF code    |
+| Meta-Auditor      | Escalate  | Validate Evolver's self-modifications                 |
+
+The inner loop (Implement → Review → Audit) runs up to `max_rounds`. Review and Audit run in parallel. If all checks pass, results are committed and Pilot takes over. On exhaustion, code is reverted to the last commit and Pilot receives a fail report to plan recovery.
 
 ## Commands
 
-| Command                        | Description                                            |
-| ------------------------------ | ------------------------------------------------------ |
-| `qcf init`                     | Create default `qcf.toml` and directory scaffold       |
-| `qcf auto <task>`              | Full pipeline: Tech-Lead → Implement → Review → Audit  |
-| `qcf auto <task> --continuous` | Auto mode + Pilot loop until steady state              |
-| `qcf run <doc>`                | Run inner loop on an existing design document          |
-| `qcf run <doc> --detach`       | Run in background, poll `/tmp/qcf-status.json`         |
-| `qcf evolve`                   | Trigger self-evolution: analyze failures, fix QCF code |
-| `qcf worktree list`            | List active git worktrees                              |
-| `qcf status`                   | Show pipeline status                                   |
-| `qcf status --watch`           | Live-updating status dashboard                         |
-| `qcf watch`                    | Watch tech-lead/ directory for new design docs         |
-| `qcf config get/set`           | Read or write configuration values                     |
-| `qcf version`                  | Print version                                          |
-| `qcf stop`                     | Kill all running QCF processes                         |
+| Command                          | Description                           |
+| -------------------------------- | ------------------------------------- |
+| `qcf init`                       | Create default config and directories |
+| `qcf auto <task>`                | Full pipeline: Tech-Lead → inner loop |
+| `qcf auto <task> --continuous`   | Auto mode + Pilot loop                |
+| `qcf run <doc>`                  | Inner loop on an existing design doc  |
+| `qcf run <doc> --detach`         | Run in background                     |
+| `qcf status [--watch]`           | Show pipeline status                  |
+| `qcf config get/set <key> [val]` | Read or write configuration           |
+| `qcf events [--tail N,--follow]` | Show pipeline events                  |
+| `qcf evolve`                     | Trigger self-evolution                |
+| `qcf worktree list\|remove`      | Manage git worktrees                  |
+| `qcf stop`                       | Kill all running QCF processes        |
+| `qcf version`                    | Print version                         |
+
+### In-Session Skills
+
+| Command       | Description                          |
+| ------------- | ------------------------------------ |
+| `/qcf-start`  | Start continuous pipeline            |
+| `/qcf-run`    | Run pipeline on a design document    |
+| `/qcf-status` | Show pipeline status                 |
+| `/qcf-stop`   | Stop all processes                   |
+| `/qcf-evolve` | Trigger evolution                    |
+| `/qcf-config` | Get/set config values                |
+| `/qcf-events` | Show pipeline events                 |
+| `/pilot`      | Inject user direction into the Pilot |
 
 ## Configuration
 
-QCF is configured via `qcf.toml` (generated by `qcf init`). Key sections:
+`qcf.toml` is generated by `qcf init`:
 
 ```toml
 [workspace]
 docs_dir = "output/docs"
-status_file = "/tmp/qcf-status.json"
 
 [stages]
 max_rounds = 3
@@ -109,60 +97,50 @@ review_timeout = 450
 audit_timeout = 300
 
 [models]
-review = "sonnet"
-audit = ""
+"api-reviewer" = "sonnet"
+"code-quality-reviewer" = "sonnet"
+"arch-reviewer" = "opus"
 
 [hooks]
 on-passed = ["notify-send 'Pipeline passed'"]
 ```
 
-## Package Structure
+## Project Structure
 
 ```
-qcf/                    # Python package (pip install -e .)
-├── cli.py             # CLI entry point & argument parsing
-├── config.py          # Configuration (qcf.toml) loader
-├── engine.py          # Pipeline state machine & stage runners
-├── evolver.py         # Self-evolution: Evolver + Meta-Audit orchestration
-├── progress.py        # AGENT_PROGRESS.json pipeline dashboard
-├── worktree.py        # Git worktree sandbox utilities
-├── runner.py          # Claude CLI subprocess launcher
-├── models.py          # Data models (Issue, ReviewOutput, AuditOutput, etc.)
-├── hooks.py           # Event hook system (script + inline + callback)
-├── watch.py           # Watch mode (inotify/poll)
-├── default_config.toml
-└── prompts/           # Jinja2 prompt templates
-    ├── tech-lead.j2
-    ├── implement.j2
-    ├── fix.j2
-    ├── review.j2
-    ├── audit.j2
-    ├── pilot.j2
-    ├── evolver.j2
-    └── meta_audit.j2
-```
+qcf/                      # Python package
+├── cli.py               # CLI entry point
+├── config.py            # Config loader (qcf.toml)
+├── engine.py            # Pipeline state machine
+├── evolver.py           # Self-evolution workflow
+├── events.py            # JSONL event logger
+├── runner.py            # Claude CLI subprocess launcher
+├── models.py            # Data models
+├── hooks.py             # Event hook system
+├── progress.py          # Pipeline dashboard
+├── worktree.py          # Git worktree utilities
+├── prompts/             # Prompt template helpers
+├── default_config.toml  # Default config values
+└── __init__.py
 
-After running `qcf init`, the following are created:
+.claude/
+├── agents/              # Agent prompt templates (one per role)
+├── skills/              # Slash command skills (6 qcf-* + pilot)
+└── worktrees/           # Isolated worktrees for evolution
 
-```
-tasks/                  # Place task descriptions here (input for auto mode)
-output/docs/            # Pipeline output artifacts
-├── tech-lead/         # Design documents
-├── code-reviewer/     # Review reports
-└── security-reviewer/ # Audit reports
+tasks/                   # Task descriptions (input for qcf auto)
+output/docs/             # Pipeline output artifacts
+├── tech-lead/           # Design documents
+├── coder/               # Implementation workspace
+├── code-reviewer/       # Review reports
+└── security-reviewer/   # Audit reports
 ```
 
 ## Requirements
 
 - Python ≥ 3.10
 - [Claude Code](https://claude.ai/code) CLI (`claude` on PATH)
-- Linux (inotify-based watch mode) or any OS with file polling fallback
-
-## Performance
-
-- Each stage runs as a separate Claude Code subprocess with configurable timeout
-- Review and Audit run in parallel using `asyncio.gather`
-- Token usage is tracked per round and displayed in the summary
+- Linux or macOS
 
 ## License
 
