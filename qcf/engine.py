@@ -191,6 +191,7 @@ def _write_validation_fail(cfg: Config, round_num: int, errors: list[str]) -> st
     issues = [
         Issue(file="scope.json" if "scope" in e else "summary.md",
               severity="high",
+              source="validation",
               description=e)
         for e in errors
     ]
@@ -444,6 +445,7 @@ async def _run_api_reviewer(
         for line in issues_file.read_text().strip().split("\n"):
             issue = Issue.from_line(line)
             if issue:
+                issue.source = "api"
                 issues.append(issue)
 
     from .models import extract_summary_feedback
@@ -497,6 +499,7 @@ async def _run_code_quality_reviewer(
         for line in issues_file.read_text().strip().split("\n"):
             issue = Issue.from_line(line)
             if issue:
+                issue.source = "quality"
                 issues.append(issue)
 
     from .models import extract_summary_feedback
@@ -632,6 +635,7 @@ async def _run_audit(
         for line in cfg.audit_issues_file.read_text().strip().split("\n"):
             issue = Issue.from_line(line)
             if issue:
+                issue.source = "security"
                 issues.append(issue)
 
     # Parse action_suggestion from result_text directly (not from log file)
@@ -696,14 +700,16 @@ def _write_fail_report(cfg: Config, round_num: int, review: ReviewOutput, audit:
     ]
     if review.issues:
         for i in review.issues:
-            lines.append(f"- [{i.severity}] `{i.file}`: {i.description}")
+            src = f" [{i.source}]" if i.source else ""
+            lines.append(f"- [{i.severity}]{src} `{i.file}`: {i.description}")
     else:
         lines.append("(no detailed issue list)")
 
     lines.extend(["\n## Audit Issues\n"])
     if audit.vulnerabilities:
         for v in audit.vulnerabilities:
-            lines.append(f"- [{v.severity}] `{v.file}`: {v.description}")
+            src = f" [{v.source}]" if v.source else ""
+            lines.append(f"- [{v.severity}]{src} `{v.file}`: {v.description}")
     else:
         lines.append("(no detailed issue list)")
 
@@ -724,14 +730,16 @@ def _write_fail_report(cfg: Config, round_num: int, review: ReviewOutput, audit:
     if review.issues:
         print(f"\n  ── Review Issues ({len(review.issues)}) ──")
         for i in review.issues:
-            print(f"    [{i.severity.upper()}] {i.file}: {i.description}")
+            src = f" [{i.source}]" if i.source else ""
+            print(f"    [{i.severity.upper()}]{src} {i.file}: {i.description}")
     print(f"\n  Audit: {audit.result}")
     if audit.summary:
         print(f"  Summary: {audit.summary}")
     if audit.vulnerabilities:
         print(f"\n  ── Audit Issues ({len(audit.vulnerabilities)}) ──")
         for v in audit.vulnerabilities:
-            print(f"    [{v.severity.upper()}] {v.file}: {v.description}")
+            src = f" [{v.source}]" if v.source else ""
+            print(f"    [{v.severity.upper()}]{src} {v.file}: {v.description}")
     print(f"{'=' * 50}")
 
     report_path.write_text(report_text)
@@ -741,18 +749,94 @@ def _write_fail_report(cfg: Config, round_num: int, review: ReviewOutput, audit:
     return report_text
 
 
-def _save_final_reports(cfg: Config, round_num: int, final_result: str) -> None:
-    """Write review+audit reports only at the very end."""
-    review_log = cfg.log_dir / f"qcf-review-{round_num:02d}.log"
-    out = cfg.out_review_dir / f"round-{round_num:02d}-review-v1.0.md"
-    _save_report(_read_safe(review_log), out)
+def _save_final_reports(cfg: Config, round_num: int, final_result: str,
+                        review: ReviewOutput, audit: AuditOutput) -> None:
+    """Write a consolidated iteration summary with api / quality / security sections."""
+    from .models import ScopeOutput
 
-    audit_log = cfg.log_dir / f"qcf-audit-{round_num:02d}.log"
-    out = cfg.out_audit_dir / f"round-{round_num:02d}-audit-v1.0.md"
-    _save_report(_read_safe(audit_log), out)
+    scope = ScopeOutput.from_file(cfg.scope_file)
 
-    print(f"\n  → Review report: {cfg.out_review_dir / f'round-{round_num:02d}-review-v1.0.md'}")
-    print(f"  → Audit report: {cfg.out_audit_dir / f'round-{round_num:02d}-audit-v1.0.md'}")
+    # ── Scope table ──
+    scope_rows = []
+    for f in scope.changed_files:
+        scope_rows.append(f"| `{f}` | changed |")
+    scope_table = "\n".join(scope_rows) if scope_rows else "(no changed files recorded)"
+
+    deps_str = ", ".join(f"`{d}`" for d in scope.dependencies) if scope.dependencies else "(none)"
+
+    # ── Issues helper ──
+    def _fmt_issues(issues: list, label: str) -> str:
+        if not issues:
+            return ""
+        lines = [f"\n**{label}**:\n"]
+        for i in issues:
+            src = f" [{i.source}]" if i.source else ""
+            lines.append(f"- [{i.severity.upper()}]{src} `{i.file}`: {i.description}")
+        return "\n".join(lines)
+
+    # ── Section generators ──
+    def _section(title: str, result: str, summary: str,
+                 issues: list, issue_label: str, extra: str = "") -> str:
+        out = f"\n## {title}\n\n**Result**: {result}\n"
+        if summary:
+            out += f"\n> {summary}\n"
+        out += _fmt_issues(issues, issue_label)
+        if extra:
+            out += f"\n{extra}"
+        return out
+
+    # ── API section ──
+    api_component = next((c for c in review.components if c.perspective == "api"), None)
+    api_section = _section(
+        "1. API Review",
+        api_component.result if api_component else review.result,
+        api_component.summary if api_component else review.summary,
+        api_component.issues if api_component else [],
+        "Issues",
+        extra=f"\n**Summary Feedback**: {review.summary_feedback}" if review.summary_feedback else "",
+    )
+
+    # ── Quality section ──
+    quality_component = next((c for c in review.components if c.perspective == "quality"), None)
+    quality_section = _section(
+        "2. Quality Review",
+        quality_component.result if quality_component else review.result,
+        quality_component.summary if quality_component else "",
+        quality_component.issues if quality_component else [],
+        "Issues",
+    )
+
+    # ── Security section ──
+    security_section = _section(
+        "3. Security Review",
+        audit.result,
+        audit.summary,
+        audit.vulnerabilities,
+        "Vulnerabilities",
+        extra=f"\n**Action Suggestion**: {audit.action_suggestion}",
+    )
+
+    report = f"""# QCF Iteration Summary — Round {round_num}
+
+**Overall Result**: {final_result}
+**Timestamp**: {_now()}
+
+## Scope
+
+| File | Type |
+|------|------|
+{scope_table}
+
+**Dependencies**: {deps_str}
+{api_section}
+{quality_section}
+{security_section}
+"""
+
+    out_path = cfg.out_review_dir / f"round-{round_num:02d}-summary-v1.0.md"
+    _save_report(report, out_path)
+
+    print(f"\n  → Summary report: {out_path}")
     print(f"  → Final result: {final_result}")
     _emit_event(cfg, "stage.end", stage="final_reports", round=round_num,
                 final_result=final_result)
@@ -912,11 +996,13 @@ class ProgressReporter:
         if review.issues:
             lines.append("  Review issues:")
             for i in review.issues:
-                lines.append(f"    [{i.severity}] {i.file}: {i.description}")
+                src = f" [{i.source}]" if i.source else ""
+                lines.append(f"    [{i.severity}]{src} {i.file}: {i.description}")
         if audit.vulnerabilities:
             lines.append("  Audit issues:")
             for v in audit.vulnerabilities:
-                lines.append(f"    [{v.severity}] {v.file}: {v.description}")
+                src = f" [{v.source}]" if v.source else ""
+                lines.append(f"    [{v.severity}]{src} {v.file}: {v.description}")
         return lines
 
     def on_exhausted(self, round_num: int, max_rounds: int,
@@ -979,11 +1065,13 @@ class StdoutReporter(ProgressReporter):
         if review.issues:
             lines.append(f"\n  ── Review Issues ({len(review.issues)}) ──")
             for i in review.issues:
-                lines.append(f"    [{i.severity.upper()}] {i.file}: {i.description}")
+                src = f" [{i.source}]" if i.source else ""
+                lines.append(f"    [{i.severity.upper()}]{src} {i.file}: {i.description}")
         if audit.vulnerabilities:
             lines.append(f"\n  ── Audit Issues ({len(audit.vulnerabilities)}) ──")
             for v in audit.vulnerabilities:
-                lines.append(f"    [{v.severity.upper()}] {v.file}: {v.description}")
+                src = f" [{v.source}]" if v.source else ""
+                lines.append(f"    [{v.severity.upper()}]{src} {v.file}: {v.description}")
         if round_num < max_rounds:
             lines.append(f"\n  → 进入 Round {round_num + 1}/{max_rounds}")
         else:
@@ -1274,7 +1362,7 @@ class QCFEngine:
                     "next_action": "completed",
                 })
 
-                _save_final_reports(cfg, round_num, "PASS")
+                _save_final_reports(cfg, round_num, "PASS", review, audit)
                 if not self._no_commit:
                     _auto_commit(cfg, round_num, stage_name)
 
@@ -1324,7 +1412,7 @@ class QCFEngine:
             round_num += 1
 
         # ── Max rounds exhausted ──
-        _save_final_reports(cfg, max_rounds, "FAIL")
+        _save_final_reports(cfg, max_rounds, "FAIL", last_review, last_audit)
         report_text = _write_fail_report(cfg, max_rounds, last_review, last_audit)
         fail_reports.append(report_text)
         self.reporter.on_exhausted(round_num, max_rounds, last_review, last_audit, report_text)

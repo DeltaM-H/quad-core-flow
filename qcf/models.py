@@ -32,16 +32,21 @@ class Issue:
     file: str
     severity: str       # high / medium / low
     description: str
+    source: str = ""    # api / quality / security / validation
 
     @classmethod
     def from_line(cls, line: str) -> Optional["Issue"]:
-        """Parse from ``file|severity|description`` format."""
-        parts = line.strip().split("|", 2)
+        """Parse ``file|severity|source|description`` (4-part) or legacy ``file|severity|description`` (3-part)."""
+        parts = line.strip().split("|", 3)
+        if len(parts) == 4:
+            return cls(file=parts[0], severity=parts[1], source=parts[2], description=parts[3])
         if len(parts) == 3:
-            return cls(parts[0], parts[1], parts[2])
+            return cls(file=parts[0], severity=parts[1], description=parts[2])
         return None
 
     def to_line(self) -> str:
+        if self.source:
+            return f"{self.file}|{self.severity}|{self.source}|{self.description}"
         return f"{self.file}|{self.severity}|{self.description}"
 
 

@@ -29,10 +29,8 @@
 [paths]
 # 所有路径相对于 workspace.docs_dir，除非是绝对路径
 # tech_lead = "tech-lead"
-# code_reviewer = "code-reviewer"
 # coder = "coder"
-# out_review = "code-reviewer"
-# out_audit = "security-reviewer"
+# out_review = "reviewer"
 # fail = "qcf"
 
 [files]

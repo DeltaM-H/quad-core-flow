@@ -61,7 +61,7 @@ REVIEW_RESULT: PASS
 或者
 REVIEW_RESULT: FAIL
 
-如果 FAIL，请使用 Write 工具将问题列表写入文件 {{ issues_file }}（每行一个问题的格式：文件路径|严重度(high/medium/low)|问题描述），同时在回复中列出问题。
+如果 FAIL，请使用 Write 工具将问题列表写入文件 {{ issues_file }}（每行一个问题的格式：`文件路径|严重度(high/medium/low)|问题描述`），同时在回复中列出问题。
 
 ## Return Protocol
 

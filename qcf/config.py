@@ -37,10 +37,8 @@ class Config:
 
     # ── Paths (resolved relative to docs_dir) ──
     tech_lead_dir: Path = Path("output/docs/tech-lead")
-    code_reviewer_dir: Path = Path("output/docs/code-reviewer")
     coder_dir: Path = Path("output/docs/coder")
-    out_review_dir: Path = Path("output/docs/code-reviewer")
-    out_audit_dir: Path = Path("output/docs/security-reviewer")
+    out_review_dir: Path = Path("output/docs/reviewer")
     fail_dir: Path = Path("output/docs/qcf")
 
     # ── Task dir (high-level task descriptions for Core 1 Tech-Lead) ──
@@ -232,10 +230,8 @@ class Config:
         paths = data.get("paths", {})
         mapping = {
             "tech_lead": "tech_lead_dir",
-            "code_reviewer": "code_reviewer_dir",
             "coder": "coder_dir",
             "out_review": "out_review_dir",
-            "out_audit": "out_audit_dir",
             "fail": "fail_dir",
             "task": "task_dir",
         }
@@ -351,8 +347,8 @@ class Config:
     def _resolve_paths(self, anchor: Path) -> None:
         """Ensure all path fields are absolute, resolving relative ones to *anchor*."""
         for attr_name in ("status_file", "log_dir",
-                          "tech_lead_dir", "code_reviewer_dir",
-                          "coder_dir", "out_review_dir", "out_audit_dir", "fail_dir",
+                          "tech_lead_dir",
+                          "coder_dir", "out_review_dir", "fail_dir",
                           "task_dir",
                           "issues_file", "review_issues_file", "audit_issues_file",
                           "pilot_task_file", "summary_pack_file",

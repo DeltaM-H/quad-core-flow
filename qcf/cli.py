@@ -38,10 +38,10 @@ def _determine_start_stage(doc_path: str) -> str:
     """Infer starting stage from the document's directory."""
     if "/tech-lead/" in doc_path:
         return "implement"
-    if "/code-reviewer/" in doc_path or "/security-reviewer/" in doc_path:
+    if "/reviewer/" in doc_path:
         return "fix"
     print(f"Warning: cannot determine starting stage from path: {doc_path}")
-    print("Defaulting to 'implement'. Place docs in tech-lead/, code-reviewer/, or security-reviewer/.")
+    print("Defaulting to 'implement'. Place docs in tech-lead/ or reviewer/.")
     return "implement"
 
 
@@ -58,9 +58,8 @@ def _cmd_init(args: argparse.Namespace) -> None:
     cfg = Config.load(target, cwd=Path.cwd())
     dirs = [
         ("Tech-Lead docs", cfg.tech_lead_dir),
+        ("Reviewer output", cfg.out_review_dir),
         ("Coder workspace", cfg.coder_dir),
-        ("Code-Reviewer docs", cfg.code_reviewer_dir),
-        ("Security-Reviewer docs", cfg.out_audit_dir),
         ("Fail reports", cfg.fail_dir),
         ("Task files", cfg.task_dir),
     ]
