@@ -13,7 +13,6 @@ from pathlib import Path
 
 from .config import Config, write_default_config
 from .engine import QCFEngine
-from .watch import watch_mode
 from . import worktree as wt
 
 _PID_FILE = Path("/tmp/qcf-pid.txt")
@@ -32,7 +31,6 @@ def _stop() -> None:
             _PID_FILE.unlink()
     # Fallback: kill by process name
     os.system("pkill -f 'qcf auto|qcf run' 2>/dev/null")
-    os.system("pkill -f 'qcf watch|inotifywait' 2>/dev/null")
     print("All QCF processes stopped.")
 
 
@@ -237,12 +235,6 @@ def _run_detached_auto(task_path: Path, max_rounds: int, continuous: bool, confi
     print(f"└─ Stop:     qcf stop")
 
 
-def _cmd_watch(args: argparse.Namespace) -> None:
-    cfg = Config.load(args.config, cwd=Path.cwd())
-    try:
-        asyncio.run(watch_mode(cfg))
-    except KeyboardInterrupt:
-        print("\nWatch stopped.")
 
 
 def _cmd_stop(args: argparse.Namespace) -> None:
@@ -801,9 +793,6 @@ def main() -> None:
     p_auto.add_argument("--detach", "-d", action="store_true",
                         help="Run in background")
 
-    # watch
-    sub.add_parser("watch", help="Watch tech-lead/ directory for new docs")
-
     # status
     p_status = sub.add_parser("status", help="Show QCF status (or --watch for live view)")
     p_status.add_argument("--watch", "-w", action="store_true",
@@ -853,8 +842,6 @@ def main() -> None:
         _cmd_run(args)
     elif args.command == "auto":
         _cmd_auto(args)
-    elif args.command == "watch":
-        _cmd_watch(args)
     elif args.command == "status":
         _cmd_status(args)
     elif args.command == "stop":
