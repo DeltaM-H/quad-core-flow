@@ -53,6 +53,7 @@ def render(template_name: str, **kwargs) -> str:
         - ``pilot.md``
         - ``evolver.md``
         - ``meta-auditor.md``
+        - ``task-validator.md``
     """
     if not template_name.endswith(".md"):
         template_name += ".md"
@@ -194,3 +195,10 @@ def meta_auditor_prompt(*, current_design: str, diff: str, fail_logs: str) -> st
                   current_design=current_design,
                   diff=diff,
                   fail_logs=fail_logs)
+
+
+def task_validator_prompt(*, task_files: list[str],
+                          project_tree_str: str = "") -> str:
+    return render("task-validator",
+                  project_tree=project_tree_str,
+                  task_files=task_files)
