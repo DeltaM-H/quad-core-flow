@@ -125,7 +125,7 @@ def _emit_event(cfg: Config, event_type: str, **data: Any) -> None:
 # ══════════════════════════════════════════════════════════════
 
 _REQUIRED_SCOPE_KEYS = ("changed_files", "dependencies", "out_of_scope")
-_REQUIRED_SUMMARY_HEADERS = ("接口签名", "安全敏感代码路径", "设计决策摘要", "代码质量关注点", "架构影响分析")
+_REQUIRED_SUMMARY_HEADERS = ("接口签名", "安全敏感代码路径", "设计决策摘要", "代码质量关注点")
 
 
 def _validate_artifacts(cfg: Config) -> tuple[bool, list[str]]:
@@ -465,60 +465,6 @@ async def _run_api_reviewer(
                          summary_feedback=summary_feedback)
 
 
-async def _run_design_reviewer(
-    cfg: Config,
-    round_num: int,
-    summary_file_path: Path,
-    scope_file_path: Path,
-) -> ReviewOutput:
-    """Design Review perspective (P0-2): decision rationale, data flow, abstraction."""
-    issues_file = _review_issues_path(cfg, round_num, "design-reviewer")
-    prompt_text = prompts.design_reviewer_prompt(
-        round_num=round_num,
-        summary_file_path=str(summary_file_path),
-        scope_file_path=str(scope_file_path),
-        issues_file=str(issues_file),
-    )
-    log_path = cfg.log_dir / f"qcf-design-reviewer-{round_num:02d}.log"
-    result_text, metrics = await run_claude(
-        prompt_text, log_path,
-        timeout=cfg.review_timeout,
-        model=cfg.model_for("design-reviewer"),
-        allowed_tools=cfg.allowed_tools,
-        output_format=cfg.output_format,
-        max_output_tokens=cfg.max_output_tokens,
-        thinking_budget=cfg.thinking_budget,
-        cwd=cfg.root_dir,
-    )
-
-    result, summary = extract_review_result(result_text)
-    if not result:
-        result = "FAIL"
-        summary = summary or "[结果解析失败]"
-
-    issues: list[Issue] = []
-    if issues_file.exists():
-        for line in issues_file.read_text().strip().split("\n"):
-            issue = Issue.from_line(line)
-            if issue:
-                issues.append(issue)
-
-    from .models import extract_summary_feedback
-    summary_feedback = extract_summary_feedback(result_text)
-    if summary_feedback:
-        print(f"     → Design Review SUMMARY_FEEDBACK: {summary_feedback[:120]}")
-
-    colored_res = _color_result(result) + (_red(" | TIMEOUT") if metrics.timed_out else "")
-    print(f"  ⚡ Design Review: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
-    print(f"     ↳ {summary[:120]}")
-
-    _emit_event(cfg, "verdict", stage="design-reviewer", round=round_num,
-                result=result, summary=summary[:120] if summary else "")
-
-    return ReviewOutput(result=result, summary=summary, issues=issues,
-                         summary_feedback=summary_feedback)
-
-
 async def _run_code_quality_reviewer(
     cfg: Config,
     round_num: int,
@@ -576,15 +522,13 @@ async def _run_code_quality_reviewer(
 async def _run_arch_reviewer(
     cfg: Config,
     round_num: int,
-    summary_file_path: Path,
-    scope_file_path: Path,
+    design_doc_path: Path,
 ) -> ReviewOutput:
-    """Architecture Review perspective: module boundaries, deps direction, conventions."""
+    """Architecture Review on the design doc (pre-implementation)."""
     issues_file = _review_issues_path(cfg, round_num, "arch-reviewer")
     prompt_text = prompts.arch_reviewer_prompt(
         round_num=round_num,
-        summary_file_path=str(summary_file_path),
-        scope_file_path=str(scope_file_path),
+        design_doc_path=str(design_doc_path),
         issues_file=str(issues_file),
     )
     log_path = cfg.log_dir / f"qcf-arch-reviewer-{round_num:02d}.log"
@@ -611,29 +555,23 @@ async def _run_arch_reviewer(
             if issue:
                 issues.append(issue)
 
-    from .models import extract_summary_feedback
-    summary_feedback = extract_summary_feedback(result_text)
-    if summary_feedback:
-        print(f"     → Architecture Review SUMMARY_FEEDBACK: {summary_feedback[:120]}")
-
     colored_res = _color_result(result) + (_red(" | TIMEOUT") if metrics.timed_out else "")
-    print(f"  ⚡ Architecture Review: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
+    print(f"  ⚡ Architecture Review (design): {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
     print(f"     ↳ {summary[:120]}")
 
-    _emit_event(cfg, "verdict", stage="arch-reviewer", round=round_num,
+    _emit_event(cfg, "verdict", stage="arch-reviewer(design)", round=round_num,
                 result=result, summary=summary[:120] if summary else "")
 
-    return ReviewOutput(result=result, summary=summary, issues=issues,
-                         summary_feedback=summary_feedback)
+    return ReviewOutput(result=result, summary=summary, issues=issues)
 
 
 def _merge_review_results(*reviews: ReviewOutput) -> ReviewOutput:
-    """Merge N review perspectives into a single ReviewOutput.
+    """Merge review perspectives into a single ReviewOutput.
 
     All PASS → overall PASS; any FAIL → overall FAIL, issues merged.
-    Position determines label: 0=API, 1=Design, 2=Quality, 3=Arch.
+    Position determines label: 0=API, 1=Quality.
     """
-    labels = ["API", "Design", "Quality", "Arch"]
+    labels = ["API", "Quality"]
     all_issues: list[Issue] = []
     merged_summary_parts: list[str] = []
     feedback_parts: list[str] = []
@@ -1273,32 +1211,25 @@ class QCFEngine:
                 next_action_hint=f"[Round {round_num}/{max_rounds}] Reviewing + auditing")
             _emit_event(cfg, "stage.start", stage="review+audit", round=round_num)
 
-            # Run 4 review perspectives + audit in parallel
+            # Run 2 review perspectives + audit in parallel (arch moved to design stage)
             review_api_task = _run_api_reviewer(cfg, round_num=round_num,
                                                summary_file_path=cfg.summary_file,
                                                scope_file_path=cfg.scope_file)
-            review_design_task = _run_design_reviewer(cfg, round_num=round_num,
-                                                     summary_file_path=cfg.summary_file,
-                                                     scope_file_path=cfg.scope_file)
             review_quality_task = _run_code_quality_reviewer(cfg, round_num=round_num,
                                                             summary_file_path=cfg.summary_file,
                                                             scope_file_path=cfg.scope_file)
-            review_arch_task = _run_arch_reviewer(cfg, round_num=round_num,
-                                                         summary_file_path=cfg.summary_file,
-                                                         scope_file_path=cfg.scope_file)
             audit_task = _run_audit(cfg, round_num=round_num,
                                      scope_file_path=cfg.scope_file,
                                      summary_file_path=cfg.summary_file)
-            review_api, review_design, review_quality, review_arch, audit = await asyncio.gather(
-                review_api_task, review_design_task, review_quality_task, review_arch_task, audit_task)  # noqa: F841  # variables re-bound by merge
+            review_api, review_quality, audit = await asyncio.gather(
+                review_api_task, review_quality_task, audit_task)
 
             # Merge review perspectives
-            review = _merge_review_results(review_api, review_design, review_quality, review_arch)
+            review = _merge_review_results(review_api, review_quality)
 
             last_review, last_audit = review, audit
 
-            print(f"[QCF] stage: review(api={review_api.result}, design={review_design.result}, "
-                  f"quality={review_quality.result}, arch={review_arch.result}) → {review.result}")
+            print(f"[QCF] stage: review(api={review_api.result}, quality={review_quality.result}) → {review.result}")
             print(f"[QCF] stage: audit → {audit.result}")
             print(f"[QCF] action_suggestion → {audit.action_suggestion}")
 
@@ -1471,6 +1402,34 @@ class QCFEngine:
             if design_doc is None:
                 print("  Tech-Lead failed — aborting continuous loop.")
                 break
+
+            # ── Step 1.5: Architecture review on design doc (pre-implementation) ──
+            print(f"\n  [Architecture] Reviewing design document...")
+            arch_result = await _run_arch_reviewer(cfg, round_num=0,
+                                                   design_doc_path=design_doc)
+            if arch_result.result != "PASS":
+                print(f"  ❌ Design rejected by architecture review — aborting iteration")
+                _emit_event(cfg, "stage.end", stage="arch-reviewer(design)",
+                            round=0, result="FAIL")
+                # Pass design failure to Pilot for recovery assessment
+                fail_context = f"Design rejected: {arch_result.summary}"
+                if arch_result.issues:
+                    fail_context += "\nIssues:\n" + "\n".join(
+                        f"- [{i.severity}] {i.file}: {i.description}"
+                        for i in arch_result.issues)
+                verdict, project_summary = await _run_pilot(
+                    cfg, last_task=current_task.name,
+                    round_history=[f"arch-reviewer(design): FAIL — {arch_result.summary[:80]}"],
+                    fail_context=fail_context,
+                )
+                if verdict == "STEADY_STATE":
+                    break
+                current_task = Path(verdict)
+                if not current_task.exists():
+                    break
+                self.overview = RoundsOverview()
+                iteration += 1
+                continue
 
             # ── Step 2: Inner loop (implement → review → audit) ──
             print(f"\n  [Core 2-4] Starting inner loop...")

@@ -16,7 +16,6 @@
 [models]
 # Per-perspective review models (individual takes priority)
 # "api-reviewer" = "sonnet"
-# "design-reviewer" = "sonnet"
 # "code-quality-reviewer" = "sonnet"
 # "arch-reviewer" = "sonnet"
 # "review" sets all perspectives as fallback:

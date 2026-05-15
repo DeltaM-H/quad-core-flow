@@ -15,7 +15,6 @@
 
 [models]
 "api-reviewer" = "sonnet"
-"design-reviewer" = "sonnet"
 "code-quality-reviewer" = "sonnet"
 "arch-reviewer" = "opus"
 # audit = ""

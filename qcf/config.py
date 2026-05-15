@@ -69,7 +69,6 @@ class Config:
 
     # ── Claude model overrides (empty = default) ──
     review_model_api: str = "sonnet"
-    review_model_design: str = "sonnet"
     review_model_quality: str = "sonnet"
     review_model_arch: str = "sonnet"
     audit_model: str = ""
@@ -131,7 +130,6 @@ class Config:
         return {
             "security-reviewer": self.audit_model,
             "api-reviewer": self.review_model_api,
-            "design-reviewer": self.review_model_design,
             "code-quality-reviewer": self.review_model_quality,
             "arch-reviewer": self.review_model_arch,
         }.get(stage) or None
@@ -263,7 +261,6 @@ class Config:
         # Per-perspective review models (individual takes priority)
         key_map = {
             "api-reviewer": "review_model_api",
-            "design-reviewer": "review_model_design",
             "code-quality-reviewer": "review_model_quality",
             "arch-reviewer": "review_model_arch",
         }
@@ -272,7 +269,7 @@ class Config:
                 setattr(cfg, attr, models[key])
         # Fallback: single "review" sets all perspectives
         if "review" in models:
-            for p in ("api", "design", "quality", "arch"):
+            for p in ("api", "quality", "arch"):
                 attr = f"review_model_{p}"
                 if getattr(cfg, attr) == "sonnet":  # only if not individually overridden
                     setattr(cfg, attr, models["review"])

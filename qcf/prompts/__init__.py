@@ -45,7 +45,6 @@ def render(template_name: str, **kwargs) -> str:
     Available templates (in ``.claude/agents/``):
         - ``implement.md``
         - ``api-reviewer.md``
-        - ``design-reviewer.md``
         - ``code-quality-reviewer.md``
         - ``arch-reviewer.md``
         - ``security-reviewer.md``
@@ -115,16 +114,6 @@ def api_reviewer_prompt(*, round_num: int, summary_file_path: str | Path,
                   issues_file=str(issues_file))
 
 
-def design_reviewer_prompt(*, round_num: int, summary_file_path: str | Path,
-                          scope_file_path: str | Path,
-                          issues_file: str | Path) -> str:
-    return render("design-reviewer",
-                  round_num=round_num,
-                  summary_file_path=str(summary_file_path),
-                  scope_file_path=str(scope_file_path),
-                  issues_file=str(issues_file))
-
-
 def code_quality_reviewer_prompt(*, round_num: int, summary_file_path: str | Path,
                                 scope_file_path: str | Path,
                                 issues_file: str | Path) -> str:
@@ -135,13 +124,12 @@ def code_quality_reviewer_prompt(*, round_num: int, summary_file_path: str | Pat
                   issues_file=str(issues_file))
 
 
-def arch_reviewer_prompt(*, round_num: int, summary_file_path: str | Path,
-                                scope_file_path: str | Path,
-                                issues_file: str | Path) -> str:
+def arch_reviewer_prompt(*, round_num: int,
+                         design_doc_path: str | Path,
+                         issues_file: str | Path) -> str:
     return render("arch-reviewer",
                   round_num=round_num,
-                  summary_file_path=str(summary_file_path),
-                  scope_file_path=str(scope_file_path),
+                  design_doc_path=str(design_doc_path),
                   issues_file=str(issues_file))
 
 
