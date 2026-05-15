@@ -297,7 +297,8 @@ async def _run_tech_lead(cfg: Config, task_path: Path, summary_pack: str = "") -
 
 async def _run_pilot(cfg: Config, last_task: str = "",
                      round_history: list[str] | None = None,
-                     user_direction: str = "") -> tuple[str, str]:
+                     user_direction: str = "",
+                     fail_context: str = "") -> tuple[str, str]:
     """Core 5: Pilot — assess project, extract structured summary, decide next step.
 
     Returns:
@@ -324,6 +325,7 @@ async def _run_pilot(cfg: Config, last_task: str = "",
         round_history=round_history or [],
         task_output_path=str(cfg.pilot_task_file),
         user_direction=direction,
+        fail_context=fail_context,
     )
     log_path = cfg.log_dir / "qcf-pilot.log"
     result_text, metrics = await run_claude(
@@ -1482,6 +1484,27 @@ class QCFEngine:
                              reason="inner_loop_replan")
                 break
 
+            # ── Handle inner loop exhaustion ──
+            fail_context = ""
+            if result == "FAIL":
+                print(f"\n  ⛔ Inner loop max rounds — reverting code to last commit")
+                _emit_event(cfg, "stage.start", stage="fail-recovery", iteration=iteration)
+
+                ret = subprocess.run(["git", "checkout", "--", "."],
+                                     cwd=cfg.root_dir, capture_output=True, text=True)
+                if ret.returncode != 0:
+                    print(f"  ⚠ git checkout failed: {ret.stderr.strip() or ret.stdout.strip()}")
+                elif cfg.coder_dir.exists():
+                    subprocess.run(["git", "clean", "-fd", str(cfg.coder_dir)],
+                                   cwd=cfg.root_dir, capture_output=True)
+
+                if cfg.fail_dir.exists():
+                    for f in sorted(cfg.fail_dir.glob("*-fail-report-*.md"))[-3:]:
+                        content = f.read_text("utf-8", errors="replace")
+                        fail_context += f"--- {f.name} ---\n{content[:2000]}\n\n"
+
+                print(f"  → Code reverted, fail context ({len(fail_context)}b) → Pilot\n")
+
             # Build round history for pilot
             round_history = [
                 f"{m.stage}: {m.result}" + (f" ({m.summary[:60]})" if m.summary else "")
@@ -1495,6 +1518,7 @@ class QCFEngine:
                 last_task=current_task.name,
                 round_history=round_history,
                 user_direction=user_direction,
+                fail_context=fail_context,
             )
 
             if verdict == "STEADY_STATE":

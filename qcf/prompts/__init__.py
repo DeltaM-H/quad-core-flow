@@ -167,13 +167,15 @@ def tech_lead_prompt(*, task_description: str, design_doc_path: str | Path,
 def pilot_prompt(*, project_tree_str: str = "", last_task: str = "",
                   round_history: list[str] | None = None,
                   task_output_path: str | Path = "",
-                  user_direction: str = "") -> str:
+                  user_direction: str = "",
+                  fail_context: str = "") -> str:
     return render("pilot",
                   project_tree=project_tree_str,
                   last_task=last_task,
                   round_history=round_history or [],
                   task_output_path=str(task_output_path),
-                  user_direction=user_direction)
+                  user_direction=user_direction,
+                  fail_context=fail_context)
 
 
 def evolver_prompt(*, fail_logs: list[str], current_design: str,
