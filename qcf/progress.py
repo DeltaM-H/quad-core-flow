@@ -1,129 +1,80 @@
-"""AGENT_PROGRESS.json — structured pipeline dashboard.
+"""AGENT_PROGRESS.jsonl — append-only pipeline dashboard.
 
-Writes an append-only history of actions taken during the QCF pipeline,
-separate from the low-level /tmp/qcf-status.json operational log.
+Replaces the legacy JSON-overwrite with a JSONL append stream.
+Each line is a self-contained event.  Use ``tail -f | jq`` for live
+monitoring or call ``.snapshot()`` for ``qcf status`` display.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
-AGENT_PROGRESS_PATH = Path("/tmp/AGENT_PROGRESS.json")
+AGENT_PROGRESS_PATH = Path("/tmp/AGENT_PROGRESS.jsonl")
 
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _read_agent_progress() -> dict[str, Any]:
-    if AGENT_PROGRESS_PATH.exists():
-        try:
-            return json.loads(AGENT_PROGRESS_PATH.read_text())
-        except (json.JSONDecodeError, Exception):
-            pass
-    return {}
-
-
 class AgentProgress:
-    """Writes a structured dashboard to ``/tmp/AGENT_PROGRESS.json``.
+    """Append-only JSONL pipeline dashboard.
 
-    Schema:
-        target (str): Current pipeline target description.
-        tasks_done (list[str]): Completed tasks in order.
-        next_action (str): What will happen next.
-        current_stage (str): Current pipeline stage.
-        round (int): Current round number.
-        max_rounds (int): Maximum configured rounds.
-        action_suggestion (str): RETRY | REPLAN.
-        failed_stages (list[str]): Stages that have failed.
-        updated_at (str): ISO-8601 timestamp.
-        history (list[dict]): Append-only event log.
+    Unlike the legacy JSON-overwrite version, each ``update_*`` call
+    appends one JSON line.  No history cap, no tasks_done accumulation,
+    no next_action state — consumers read the tail.
     """
 
     def __init__(self, target: str = "", max_rounds: int = 3) -> None:
-        # Preserve existing data if restarting
-        existing = _read_agent_progress()
-        self.data: dict[str, Any] = {
-            "target": target or existing.get("target", ""),
-            "tasks_done": existing.get("tasks_done", []),
-            "next_action": "Starting pipeline",
-            "current_stage": "initializing",
-            "round": 0,
+        self._append({
+            "event": "init",
+            "target": target,
             "max_rounds": max_rounds,
-            "action_suggestion": "RETRY",
-            "failed_stages": [],
-            "updated_at": _now_iso(),
-            "history": existing.get("history", []),
+        })
+
+    def update_before_round(self, stage: str, round_num: int, **kwargs: Any) -> None:
+        """Append a stage-start event."""
+        record: dict[str, Any] = {
+            "event": "stage_start",
+            "stage": stage,
+            "round": round_num,
         }
-        self._write()
-
-    def update_before_round(self, stage: str, round_num: int, *,
-                            target: str = "",
-                            tasks_done_summary: str = "",
-                            next_action_hint: str = "") -> None:
-        """Called by engine before each stage starts — always updates Target/Tasks Done/Next Action."""
-        self.data["current_stage"] = stage
-        self.data["round"] = round_num
-
-        if target:
-            self.data["target"] = target
-
-        if tasks_done_summary:
-            self.data["tasks_done_summary"] = tasks_done_summary
-
-        # Build a descriptive next_action if none provided
-        if next_action_hint:
-            self.data["next_action"] = next_action_hint
-        else:
-            self.data["next_action"] = f"[Round {round_num}] {stage}"
-
-        self.data["updated_at"] = _now_iso()
-        self._write()
+        record.update({k: v for k, v in kwargs.items() if v})
+        self._append(record)
 
     def update_on_complete(self, result: dict[str, Any]) -> None:
-        """Called when a round or stage finishes."""
-        task_label = result.get("task") or result.get("stage", "")
-        if task_label:
-            self.data["tasks_done"].append(task_label)
+        """Append a stage-end event."""
+        record: dict[str, Any] = {
+            "event": "stage_end",
+        }
+        record.update(result)
+        self._append(record)
 
-        if result.get("stage"):
-            status = result.get("status", "done")
-            self.data["current_stage"] = f"{result['stage']} ({status})"
-
-        if result.get("action_suggestion"):
-            self.data["action_suggestion"] = result["action_suggestion"]
-
-        if result.get("failed_stages"):
-            self.data["failed_stages"] = list(set(self.data["failed_stages"] + result["failed_stages"]))
-
-        if result.get("next_action"):
-            self.data["next_action"] = result["next_action"]
-
-        self.data["history"].append({
-            "stage": result.get("stage", ""),
-            "round": result.get("round", 0),
-            "result": result.get("status", ""),
-            "timestamp": _now_iso(),
-        })
-        # Cap history to last 50 entries
-        if len(self.data["history"]) > 50:
-            self.data["history"] = self.data["history"][-50:]
-
-        self.data["updated_at"] = _now_iso()
-        self._write()
-
-    def _write(self) -> None:
-        """Atomic write via temp file + rename to avoid partial reads."""
-        tmp = AGENT_PROGRESS_PATH.with_suffix(".tmp")
+    def _append(self, record: dict[str, Any]) -> None:
+        """Append one JSON line to the JSONL file."""
+        record["_updated_at"] = _now_iso()
         try:
-            tmp.write_text(
-                json.dumps(self.data, ensure_ascii=False, indent=2, default=str)
-            )
-            os.chmod(tmp, 0o600)
-            tmp.rename(AGENT_PROGRESS_PATH)
+            AGENT_PROGRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(AGENT_PROGRESS_PATH, "a") as f:
+                f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+            os.chmod(AGENT_PROGRESS_PATH, 0o600)
         except OSError:
-            pass  # Best-effort write
+            pass
+
+    def snapshot(self, n: int = 20) -> list[dict[str, Any]]:
+        """Return last *n* events via ``tail``."""
+        if not AGENT_PROGRESS_PATH.exists():
+            return []
+        try:
+            result = subprocess.run(
+                ["tail", "-n", str(n), str(AGENT_PROGRESS_PATH)],
+                capture_output=True, text=True, timeout=5,
+            )
+            lines = [l for l in result.stdout.strip().split("\n") if l.strip()]
+            return [json.loads(l) for l in lines]
+        except Exception:
+            return []

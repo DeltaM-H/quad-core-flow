@@ -13,10 +13,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .config import Config
+from .events import EventLogger
 from .models import (
     ActionSuggestion,
     AuditOutput,
     Issue,
+    ReviewComponent,
     ReviewOutput,
     RoundStageMetric,
     RoundsOverview,
@@ -102,26 +104,103 @@ def _git(cmd: list[str], cwd: Path | None = None) -> int:
 
 
 # ══════════════════════════════════════════════════════════════
-# Status JSON writer
+# Unified event helper (replaces legacy _write_status)
 # ══════════════════════════════════════════════════════════════
 
-def _write_status(status_file: Path, data: dict[str, Any]) -> None:
-    prev: dict[str, Any] = {}
-    if status_file.exists():
-        try:
-            prev = json.loads(status_file.read_text())
-        except (json.JSONDecodeError, Exception):
-            pass
-    for key in ("design_doc", "started_at", "max_rounds"):
-        if key in prev and key not in data:
-            data[key] = prev[key]
-    data["_updated_at"] = _timestamp()
+def _emit_event(cfg: Config, event_type: str, **data: Any) -> None:
+    """Append a structured event to the unified events JSONL file."""
     try:
-        status_file.parent.mkdir(parents=True, exist_ok=True)
-        status_file.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str))
-        os.chmod(status_file, 0o600)
-    except OSError as e:
-        print(f"  [warn] cannot write status file: {e}")
+        logger = EventLogger(cfg.events_file)
+        logger.append(event_type, **data)
+    except Exception:
+        pass  # best-effort
+
+
+# ══════════════════════════════════════════════════════════════
+# Artifact validation & timeout cleanup  (P0-1, P1-6)
+# ══════════════════════════════════════════════════════════════
+
+_REQUIRED_SCOPE_KEYS = ("changed_files", "dependencies", "out_of_scope")
+_REQUIRED_SUMMARY_HEADERS = ("接口签名", "安全敏感代码路径", "设计决策摘要")
+
+
+def _validate_artifacts(cfg: Config) -> tuple[bool, list[str]]:
+    """Validate scope.json and summary.md content integrity.
+
+    Returns:
+        ``(passed, errors)`` where *errors* is a list of human-readable messages.
+    """
+    errors: list[str] = []
+
+    # 1. Validate scope.json
+    if not cfg.scope_file.exists():
+        errors.append(f"scope.json not found: {cfg.scope_file}")
+    else:
+        try:
+            scope_data = json.loads(cfg.scope_file.read_text("utf-8", errors="replace"))
+            for key in _REQUIRED_SCOPE_KEYS:
+                if key not in scope_data:
+                    errors.append(f"scope.json: missing required key '{key}'")
+                elif not isinstance(scope_data[key], list):
+                    errors.append(f"scope.json: '{key}' must be a list, got {type(scope_data[key]).__name__}")
+        except (json.JSONDecodeError, Exception) as e:
+            errors.append(f"scope.json: invalid JSON — {e}")
+
+    # 2. Validate summary.md
+    if not cfg.summary_file.exists():
+        errors.append(f"summary.md not found: {cfg.summary_file}")
+    else:
+        content = cfg.summary_file.read_text("utf-8", errors="replace")
+        for header in _REQUIRED_SUMMARY_HEADERS:
+            if header not in content:
+                errors.append(f"summary.md: missing required section '### {header}'")
+            else:
+                # Extract section content (between this header and next header or EOF)
+                idx = content.index(header)
+                section_text = content[idx + len(header):].strip()
+                # Find the next markdown header
+                next_header_match = re.search(r'\n###\s+', section_text)
+                if next_header_match:
+                    section_text = section_text[:next_header_match.start()].strip()
+                # Check for substantive content (>50 non-whitespace chars)
+                content_chars = len(re.sub(r'\s', '', section_text))
+                if content_chars < 50:
+                    errors.append(
+                        f"summary.md: section '{header}' has insufficient content "
+                        f"({content_chars} non-whitespace chars, need >= 50)"
+                    )
+
+    return len(errors) == 0, errors
+
+
+def _mark_incomplete_artifacts(cfg: Config) -> None:
+    """Rename artifacts to ``.incomplete`` after a timeout so review/audit fast-fail."""
+    for f in (cfg.scope_file, cfg.summary_file):
+        if f.exists():
+            incomplete = f.with_suffix(f.suffix + ".incomplete")
+            f.rename(incomplete)
+            print(f"     → renamed {f.name} → {incomplete.name}")
+
+
+def _write_validation_fail(cfg: Config, round_num: int, errors: list[str]) -> str:
+    """Write validation failure issues for the next fix round."""
+    issues = [
+        Issue(file="scope.json" if "scope" in e else "summary.md",
+              severity="high",
+              description=e)
+        for e in errors
+    ]
+    cfg.issues_file.write_text("\n".join(i.to_line() for i in issues))
+    os.chmod(cfg.issues_file, 0o600)
+
+    report = f"# Artifact Validation Failure — Round {round_num}\n\n"
+    for e in errors:
+        report += f"- {e}\n"
+    fail_path = cfg.fail_dir / f"{round_num:02d}-validation-fail.md"
+    cfg.fail_dir.mkdir(parents=True, exist_ok=True)
+    fail_path.write_text(report)
+    print(f"  → Validation fail report: {fail_path}")
+    return report
 
 
 # ══════════════════════════════════════════════════════════════
@@ -133,10 +212,7 @@ async def _run_implement(
     design_doc: Path,
     round_num: int,
 ) -> tuple[str, Any]:  # returns (result_text, StageMetrics)
-    _write_status(cfg.status_file, {
-        "current_round": round_num,
-        "current_stage": "implement (running)",
-    })
+    _emit_event(cfg, "stage.start", stage="implement", round=round_num)
     cfg.coder_dir.mkdir(parents=True, exist_ok=True)
     prompt_text = prompts.implement_prompt(
         design_doc_path=str(design_doc),
@@ -155,10 +231,10 @@ async def _run_implement(
         thinking_budget=cfg.thinking_budget,
         cwd=cfg.root_dir,
     )
-    _write_status(cfg.status_file, {
-        "current_round": round_num,
-        "current_stage": f"implement ({'TIMEOUT' if metrics.timed_out else 'PASS'})",
-    })
+    stage_result = "TIMEOUT" if metrics.timed_out else "PASS"
+    _emit_event(cfg, "stage.end", stage="implement", round=round_num,
+                result=stage_result,
+                tokens_in=metrics.input_tokens, tokens_out=metrics.output_tokens)
     # Validate stage artifacts
     if not metrics.timed_out:
         if cfg.scope_file.exists():
@@ -177,10 +253,7 @@ async def _run_implement(
 
 async def _run_tech_lead(cfg: Config, task_path: Path, summary_pack: str = "") -> Path | None:
     """Core 1: Tech-Lead — analyze project and produce a design document."""
-    _write_status(cfg.status_file, {
-        "current_round": 1,
-        "current_stage": "tech-lead (running)",
-    })
+    _emit_event(cfg, "stage.start", stage="tech-lead", round=1)
 
     task_description = task_path.read_text("utf-8", errors="replace")
     tree = prompts.project_tree(cwd=cfg.root_dir)
@@ -208,10 +281,9 @@ async def _run_tech_lead(cfg: Config, task_path: Path, summary_pack: str = "") -
     )
 
     success = not metrics.timed_out and design_doc.exists()
-    _write_status(cfg.status_file, {
-        "current_round": 0,
-        "current_stage": f"tech-lead ({'PASS' if success else 'FAIL'})",
-    })
+    result = "PASS" if success else "FAIL"
+    _emit_event(cfg, "stage.end", stage="tech-lead", result=result,
+                tokens_in=metrics.input_tokens, tokens_out=metrics.output_tokens)
     tag = _green("PASS") if success else _red("FAIL")
     print(f"  ⚡ Tech-Lead: {tag} | {design_doc.name}")
     print(f"[QCF] stage: tech-lead → {'PASS' if success else 'FAIL'}")
@@ -228,10 +300,7 @@ async def _run_pilot(cfg: Config, last_task: str = "",
         - verdict is ``"STEADY_STATE"`` or a path to a new task file.
         - project_summary is the extracted PROJECT_SUMMARY block (or empty string).
     """
-    _write_status(cfg.status_file, {
-        "current_round": 0,
-        "current_stage": "pilot (running)",
-    })
+    _emit_event(cfg, "stage.start", stage="pilot", round=0)
 
     tree = prompts.project_tree(cwd=cfg.root_dir, max_depth=4)
     cfg.task_dir.mkdir(parents=True, exist_ok=True)
@@ -278,6 +347,8 @@ async def _run_pilot(cfg: Config, last_task: str = "",
         cfg.pilot_task_file.unlink(missing_ok=True)
 
     verdict_tag = "STEADY_STATE" if verdict == "STEADY_STATE" else "NEW_TASK"
+    _emit_event(cfg, "stage.end", stage="pilot", result=verdict_tag,
+                tokens_in=metrics.input_tokens, tokens_out=metrics.output_tokens)
     print(f"  ⚡ Pilot: {'🟢 STEADY_STATE' if verdict == 'STEADY_STATE' else '🔄 new task: ' + verdict}")
     print(f"[QCF] stage: pilot → {verdict_tag}")
     return verdict, project_summary
@@ -288,10 +359,7 @@ async def _run_fix(
     design_doc: Path,
     round_num: int,
 ) -> tuple[str, Any]:
-    _write_status(cfg.status_file, {
-        "current_round": round_num,
-        "current_stage": "fix (running)",
-    })
+    _emit_event(cfg, "stage.start", stage="fix", round=round_num)
 
     cfg.coder_dir.mkdir(parents=True, exist_ok=True)
     issues_content = _read_safe(cfg.issues_file) if cfg.issues_file.exists() else "(问题列表文件不存在)"
@@ -314,26 +382,34 @@ async def _run_fix(
         thinking_budget=cfg.thinking_budget,
         cwd=cfg.root_dir,
     )
-    _write_status(cfg.status_file, {
-        "current_round": round_num,
-        "current_stage": f"fix ({'TIMEOUT' if metrics.timed_out else 'PASS'})",
-    })
+    stage_result = "TIMEOUT" if metrics.timed_out else "PASS"
+    _emit_event(cfg, "stage.end", stage="fix", round=round_num,
+                result=stage_result,
+                tokens_in=metrics.input_tokens, tokens_out=metrics.output_tokens)
     return result_text, metrics
 
 
-async def _run_review(
+
+def _review_issues_path(cfg: Config, round_num: int, perspective: str) -> Path:
+    """Return a unique issue file path for each review perspective (avoid concurrent write races)."""
+    return cfg.log_dir / f"review-{perspective}-issues-{round_num:02d}.txt"
+
+
+async def _run_review_api(
     cfg: Config,
     round_num: int,
     summary_file_path: Path,
     scope_file_path: Path,
 ) -> ReviewOutput:
-    prompt_text = prompts.review_prompt(
+    """API Review perspective (P0-2): interface signatures, backward compatibility."""
+    issues_file = _review_issues_path(cfg, round_num, "api")
+    prompt_text = prompts.api_review_prompt(
         round_num=round_num,
         summary_file_path=str(summary_file_path),
         scope_file_path=str(scope_file_path),
-        issues_file=str(cfg.review_issues_file),
+        issues_file=str(issues_file),
     )
-    log_path = cfg.log_dir / f"qcf-review-{round_num:02d}.log"
+    log_path = cfg.log_dir / f"qcf-review-api-{round_num:02d}.log"
     result_text, metrics = await run_claude(
         prompt_text, log_path,
         timeout=cfg.review_timeout,
@@ -351,24 +427,123 @@ async def _run_review(
         summary = summary or "[结果解析失败]"
 
     issues: list[Issue] = []
-    if cfg.review_issues_file.exists():
-        for line in cfg.review_issues_file.read_text().strip().split("\n"):
+    if issues_file.exists():
+        for line in issues_file.read_text().strip().split("\n"):
             issue = Issue.from_line(line)
             if issue:
                 issues.append(issue)
 
     from .models import extract_summary_feedback
-
     summary_feedback = extract_summary_feedback(result_text)
     if summary_feedback:
-        print(f"     → SUMMARY_FEEDBACK: {summary_feedback[:120]}")
+        print(f"     → API Review SUMMARY_FEEDBACK: {summary_feedback[:120]}")
 
     colored_res = _color_result(result) + (_red(" | TIMEOUT") if metrics.timed_out else "")
-    print(f"  ⚡ Review: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
+    print(f"  ⚡ API Review: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
     print(f"     ↳ {summary[:120]}")
+
+    _emit_event(cfg, "verdict", stage="review_api", round=round_num,
+                result=result, summary=summary[:120] if summary else "")
 
     return ReviewOutput(result=result, summary=summary, issues=issues,
                          summary_feedback=summary_feedback)
+
+
+async def _run_review_design(
+    cfg: Config,
+    round_num: int,
+    summary_file_path: Path,
+    scope_file_path: Path,
+) -> ReviewOutput:
+    """Design Review perspective (P0-2): decision rationale, data flow, abstraction."""
+    issues_file = _review_issues_path(cfg, round_num, "design")
+    prompt_text = prompts.design_review_prompt(
+        round_num=round_num,
+        summary_file_path=str(summary_file_path),
+        scope_file_path=str(scope_file_path),
+        issues_file=str(issues_file),
+    )
+    log_path = cfg.log_dir / f"qcf-review-design-{round_num:02d}.log"
+    result_text, metrics = await run_claude(
+        prompt_text, log_path,
+        timeout=cfg.review_timeout,
+        model=cfg.model_for("review"),
+        allowed_tools=cfg.allowed_tools,
+        output_format=cfg.output_format,
+        max_output_tokens=cfg.max_output_tokens,
+        thinking_budget=cfg.thinking_budget,
+        cwd=cfg.root_dir,
+    )
+
+    result, summary = extract_review_result(result_text)
+    if not result:
+        result = "FAIL"
+        summary = summary or "[结果解析失败]"
+
+    issues: list[Issue] = []
+    if issues_file.exists():
+        for line in issues_file.read_text().strip().split("\n"):
+            issue = Issue.from_line(line)
+            if issue:
+                issues.append(issue)
+
+    from .models import extract_summary_feedback
+    summary_feedback = extract_summary_feedback(result_text)
+    if summary_feedback:
+        print(f"     → Design Review SUMMARY_FEEDBACK: {summary_feedback[:120]}")
+
+    colored_res = _color_result(result) + (_red(" | TIMEOUT") if metrics.timed_out else "")
+    print(f"  ⚡ Design Review: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
+    print(f"     ↳ {summary[:120]}")
+
+    _emit_event(cfg, "verdict", stage="review_design", round=round_num,
+                result=result, summary=summary[:120] if summary else "")
+
+    return ReviewOutput(result=result, summary=summary, issues=issues,
+                         summary_feedback=summary_feedback)
+
+
+def _merge_review_results(api_review: ReviewOutput, design_review: ReviewOutput) -> ReviewOutput:
+    """Merge two review perspectives into a single ReviewOutput.
+
+    - If both PASS → overall PASS
+    - If either FAIL → overall FAIL, issues merged from both
+    """
+    all_issues: list[Issue] = []
+    all_issues.extend(api_review.issues)
+    all_issues.extend(design_review.issues)
+
+    merged_result = "PASS" if (api_review.result == "PASS" and design_review.result == "PASS") else "FAIL"
+
+    merged_summary_parts = []
+    if api_review.summary:
+        merged_summary_parts.append(f"[API] {api_review.summary}")
+    if design_review.summary:
+        merged_summary_parts.append(f"[Design] {design_review.summary}")
+    merged_summary = " | ".join(merged_summary_parts)
+
+    # Collect summary feedback from both
+    feedback_parts = []
+    if api_review.summary_feedback:
+        feedback_parts.append(f"[API] {api_review.summary_feedback}")
+    if design_review.summary_feedback:
+        feedback_parts.append(f"[Design] {design_review.summary_feedback}")
+    merged_feedback = " | ".join(feedback_parts) if feedback_parts else None
+
+    components = [
+        ReviewComponent(perspective="api", result=api_review.result,
+                         issues=api_review.issues, summary=api_review.summary),
+        ReviewComponent(perspective="design", result=design_review.result,
+                         issues=design_review.issues, summary=design_review.summary),
+    ]
+
+    return ReviewOutput(
+        result=merged_result,
+        summary=merged_summary,
+        issues=all_issues,
+        summary_feedback=merged_feedback,
+        components=components,
+    )
 
 
 async def _run_audit(
@@ -377,6 +552,7 @@ async def _run_audit(
     scope_file_path: Path,
     summary_file_path: Path,
 ) -> AuditOutput:
+    _emit_event(cfg, "stage.start", stage="audit", round=round_num)
     prompt_text = prompts.audit_prompt(
         round_num=round_num,
         scope_file_path=str(scope_file_path),
@@ -414,6 +590,10 @@ async def _run_audit(
     print(f"  ⚡ Audit: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
     print(f"     ↳ {summary[:120]}")
 
+    _emit_event(cfg, "stage.end", stage="audit", round=round_num,
+                result=result, action_suggestion=action_suggestion,
+                tokens_in=metrics.input_tokens, tokens_out=metrics.output_tokens)
+
     return AuditOutput(result=result, summary=summary, vulnerabilities=issues,
                        action_suggestion=action_suggestion)
 
@@ -444,7 +624,11 @@ def _auto_commit(cfg: Config, round_num: int, stage_name: str = "implement") -> 
 
     msg = cfg.commit_message_stage(stage_name, round_num)
     ret = subprocess.run(["git", "commit", "-m", msg], cwd=cfg.root_dir).returncode
-    print("  → Committed." if ret == 0 else "  → Commit failed.")
+    if ret == 0:
+        print("  → Committed.")
+        _emit_event(cfg, "commit", stage=stage_name, round=round_num)
+    else:
+        print("  → Commit failed.")
 
 
 def _write_fail_report(cfg: Config, round_num: int, review: ReviewOutput, audit: AuditOutput) -> str:
@@ -501,6 +685,8 @@ def _write_fail_report(cfg: Config, round_num: int, review: ReviewOutput, audit:
 
     report_path.write_text(report_text)
     print(f"\n  → Fail report: {report_path}")
+    _emit_event(cfg, "stage.end", stage="fail_report", round=round_num,
+                review_result=review.result, audit_result=audit.result)
     return report_text
 
 
@@ -517,6 +703,8 @@ def _save_final_reports(cfg: Config, round_num: int, final_result: str) -> None:
     print(f"\n  → Review report: {cfg.out_review_dir / f'round-{round_num:02d}-review-v1.0.md'}")
     print(f"  → Audit report: {cfg.out_audit_dir / f'round-{round_num:02d}-audit-v1.0.md'}")
     print(f"  → Final result: {final_result}")
+    _emit_event(cfg, "stage.end", stage="final_reports", round=round_num,
+                final_result=final_result)
 
 
 def _write_summary_pack(
@@ -524,14 +712,14 @@ def _write_summary_pack(
     new_task: Path,
     round_history: list[str],
 ) -> str:
-    """Write a compact summary pack for the next Tech-Lead iteration.
+    """Write a structured summary pack for the next Tech-Lead iteration.
 
-    Extracts key classes, imports, and recent results from the project,
-    writing to ``/tmp/qcf-summary-pack.json`` (hard cap at 10 KB).
+    Richer than the earlier version: includes ``key_modules``,
+    ``known_patterns``, ``past_failure_modes`` and a human-readable
+    ``interface_summary``.  Capped at ``cfg.summary_pack_max_bytes`` (default 12 KB).
 
     Returns:
-        The summary content as a string (for passing to Tech-Lead in-process),
-        or empty string on failure.
+        The summary content as a string, or empty string on failure.
     """
     import json
     import subprocess
@@ -540,40 +728,78 @@ def _write_summary_pack(
         "new_task": new_task.name,
         "task_description": new_task.read_text("utf-8", errors="replace")[:2000],
         "recent_history": round_history[-10:],
+        "interface_summary": "tech-lead → design_doc | implement → scope.json + summary.md",
     }
 
-    # Extract top-level module/class names from qcf/
+    # key_modules: introspect qcf/ for purpose and key classes
+    key_modules: list[dict[str, object]] = []
     try:
         result = subprocess.run(
             ["find", "qcf", "-name", "*.py", "-maxdepth", 2],
             capture_output=True, text=True, timeout=10,
             cwd=str(cfg.root_dir),
         )
-        summary["qcf_modules"] = [l.strip() for l in result.stdout.split("\n") if l.strip()]
+        all_py = [l.strip() for l in result.stdout.split("\n") if l.strip()]
+        for py_path in sorted(all_py):
+            p = cfg.root_dir / py_path
+            if p.is_file():
+                content = p.read_text("utf-8", errors="replace")
+                classes = [line.split("class ")[1].split("(")[0].split(":")[0].strip()
+                          for line in content.split("\n") if "class " in line and ":" in line]
+                # Determine purpose from first docstring line
+                purpose = ""
+                for line in content.split("\n")[1:6]:
+                    s = line.strip().strip('"').strip("'")
+                    if s and not s.startswith("from ") and not s.startswith("import "):
+                        purpose = s[:80]
+                        break
+                key_modules.append({
+                    "path": py_path,
+                    "purpose": purpose or "N/A",
+                    "key_classes": classes[:5],
+                })
+        summary["key_modules"] = key_modules
     except Exception:
-        summary["qcf_modules"] = []
+        summary["key_modules"] = []
 
-    # Extract key imports from qcf/*.py
-    imports: list[str] = []
+    # known_patterns: detect async gather, atomic write, etc.
+    known_patterns: list[str] = []
     try:
-        for py_file in cfg.root_dir.glob("qcf/*.py"):
-            if py_file.name == "__init__.py":
-                continue
-            content = py_file.read_text("utf-8", errors="replace")
-            for line in content.split("\n"):
-                if line.startswith("import ") or line.startswith("from "):
-                    imports.append(f"{py_file.name}: {line.strip()}")
-        summary["key_imports"] = imports[:30]  # Cap at 30 lines
+        engine_content = Path(__file__).read_text("utf-8", errors="replace")
+        if "asyncio.gather" in engine_content:
+            known_patterns.append("async gather for parallel stages")
+        if "tmp" and "rename" in engine_content:
+            known_patterns.append("atomic write via tmp+rename")
+        if "umask" in engine_content:
+            known_patterns.append("strict umask for file permissions")
+        summary["known_patterns"] = known_patterns
     except Exception:
-        summary["key_imports"] = []
+        summary["known_patterns"] = []
+
+    # past_failure_modes: check fail_dir for recent failures
+    past_failures: list[str] = []
+    try:
+        if cfg.fail_dir.exists():
+            for f in sorted(cfg.fail_dir.glob("*-fail-report-*.md"))[-5:]:
+                content = f.read_text("utf-8", errors="replace")
+                lines = content.strip().split("\n")
+                # Extract first meaningful line as summary
+                for line in lines:
+                    if line.startswith("QCF failed") or line.startswith("Review:"):
+                        past_failures.append(line[:120])
+                        break
+        if past_failures:
+            summary["past_failure_modes"] = past_failures
+    except Exception:
+        pass
 
     summary_text = json.dumps(summary, ensure_ascii=False, indent=2, default=str)
 
-    # Hard cap at 10 KB
-    if len(summary_text) > 10240:
-        summary_text = summary_text[:10240] + '\n...\n}'
+    # Cap at configured max bytes
+    if len(summary_text) > cfg.summary_pack_max_bytes:
+        summary_text = summary_text[:cfg.summary_pack_max_bytes] + '\n...\n}'
 
-    # Write to file (truncated)
+    # Write to file
     try:
         cfg.summary_pack_file.parent.mkdir(parents=True, exist_ok=True)
         cfg.summary_pack_file.write_text(summary_text)
@@ -778,22 +1004,17 @@ class QCFEngine:
         os.umask(0o077)
         max_rounds = max_rounds or cfg.max_rounds
 
-        # Initialize AgentProgress dashboard
+        # Initialize AgentProgress dashboard (JSONL)
         progress = AgentProgress(
             target=design_doc.stem.replace("-design", ""),
             max_rounds=max_rounds,
         )
 
-        # Initial status
-        _write_status(cfg.status_file, {
-            "design_doc": str(design_doc),
-            "started_at": _now(),
-            "max_rounds": max_rounds,
-            "current_round": 1,
-            "current_stage": "starting",
-            "history": [],
-            "final_result": None,
-        })
+        # Emit initial event
+        _emit_event(cfg, "pipeline.start",
+                     design_doc=str(design_doc),
+                     max_rounds=max_rounds,
+                     started_at=_now())
 
         self.reporter.on_start(design_doc, max_rounds)
         await self.hooks.run_async("post-start",
@@ -847,7 +1068,11 @@ class QCFEngine:
                 input_tokens=metrics.input_tokens, output_tokens=metrics.output_tokens,
                 timed_out=metrics.timed_out)
 
+            # ── Timeout handling (P1-6): mark artifacts, decide next ──
             if metrics.timed_out:
+                _mark_incomplete_artifacts(cfg)
+                _emit_event(cfg, "timeout", stage=stage_name, round=round_num)
+
                 self._consecutive_fails += 1
                 self.overview.add(RoundStageMetric(stage="review", result="SKIP",
                                                    summary="[implement/fix timed out]"))
@@ -863,7 +1088,8 @@ class QCFEngine:
                 # Check consecutive fails for REPLAN
                 if self._consecutive_fails >= cfg.max_consecutive_fails:
                     print(f"\n  ⛔ REPLAN triggered — {self._consecutive_fails} consecutive failures")
-                    _write_status(cfg.status_file, {"current_stage": "replan"})
+                    _emit_event(cfg, "replan", reason="consecutive_timeout",
+                                 round=round_num, consecutive_fails=self._consecutive_fails)
                     progress.update_on_complete({
                         "stage": "replan", "round": round_num,
                         "status": "REPLAN",
@@ -877,31 +1103,72 @@ class QCFEngine:
                 round_num += 1
                 continue
 
-            # ── Stage 2: Review + Audit (parallel) ──
+            # ── Artifact validation (P0-1): gate before review+audit ──
+            validation_passed, validation_errors = _validate_artifacts(cfg)
+            _emit_event(cfg, "artifact.validation",
+                         result="PASS" if validation_passed else "FAIL",
+                         details=validation_errors,
+                         round=round_num)
+
+            if not validation_passed:
+                print(f"\n  → Artifact validation FAILED ({len(validation_errors)} issues):")
+                for e in validation_errors:
+                    print(f"    - {e}")
+
+                if cfg.artifact_validation_mode == "hard":
+                    print(f"  → Hard gate: blocking pipeline, entering next fix round")
+                    _write_validation_fail(cfg, round_num, validation_errors)
+                    # Treat as FAIL — skip review+audit, go to next round
+                    self._consecutive_fails += 1
+                    self.overview.add(RoundStageMetric(
+                        stage="artifact_validation", result="FAIL",
+                        summary=f"validation: {len(validation_errors)} issues"))
+                    self.overview.add(RoundStageMetric(stage="review", result="SKIP",
+                                                       summary="[blocked by validation]"))
+                    self.overview.add(RoundStageMetric(stage="audit", result="SKIP",
+                                                       summary="[blocked by validation]"))
+
+                    if self._consecutive_fails >= cfg.max_consecutive_fails:
+                        print(f"\n  ⛔ REPLAN triggered — {self._consecutive_fails} consecutive failures")
+                        _emit_event(cfg, "replan", reason="validation_fail",
+                                     round=round_num, consecutive_fails=self._consecutive_fails)
+                        await self._handle_replan(cfg, fail_reports, design_content)
+                        return "REPLAN"
+
+                    print(f"\n  → Entering next fix round ({round_num + 1}/{max_rounds})")
+                    round_num += 1
+                    continue
+                else:
+                    print(f"  → Warm mode: validation failed but continuing ({cfg.artifact_validation_mode})")
+
+            # ── Stage 2: Review (API + Design) + Audit (parallel) ──
             self.reporter.on_stage_start(round_num, max_rounds, "review")
             await self.hooks.run_async("pre-stage", stage="review+audit", round=round_num)
             progress.update_before_round("review+audit", round_num,
                 target=design_doc.stem.replace("-design", ""),
                 tasks_done_summary=f"{len(self.overview.entries)} stages completed",
                 next_action_hint=f"[Round {round_num}/{max_rounds}] Reviewing + auditing")
-            _write_status(cfg.status_file, {
-                "current_round": round_num,
-                "current_stage": "reviewing + auditing",
-                "history": [m.__dict__ for m in self.overview.entries],
-                "final_result": None,
-            })
+            _emit_event(cfg, "stage.start", stage="review+audit", round=round_num)
 
-            review_task = _run_review(cfg, round_num=round_num,
-                                       summary_file_path=cfg.summary_file,
-                                       scope_file_path=cfg.scope_file)
+            # Run API review, design review, and audit in parallel (P0-2)
+            review_api_task = _run_review_api(cfg, round_num=round_num,
+                                               summary_file_path=cfg.summary_file,
+                                               scope_file_path=cfg.scope_file)
+            review_design_task = _run_review_design(cfg, round_num=round_num,
+                                                     summary_file_path=cfg.summary_file,
+                                                     scope_file_path=cfg.scope_file)
             audit_task = _run_audit(cfg, round_num=round_num,
                                      scope_file_path=cfg.scope_file,
                                      summary_file_path=cfg.summary_file)
-            review, audit = await asyncio.gather(review_task, audit_task)
+            review_api, review_design, audit = await asyncio.gather(
+                review_api_task, review_design_task, audit_task)
+
+            # Merge review perspectives
+            review = _merge_review_results(review_api, review_design)
 
             last_review, last_audit = review, audit
 
-            print(f"[QCF] stage: review → {review.result}")
+            print(f"[QCF] stage: review(api={review_api.result}, design={review_design.result}) → {review.result}")
             print(f"[QCF] stage: audit → {audit.result}")
             print(f"[QCF] action_suggestion → {audit.action_suggestion}")
 
@@ -916,12 +1183,8 @@ class QCFEngine:
                 stage="audit", result=audit.result, summary=audit.summary,
             ))
 
-            _write_status(cfg.status_file, {
-                "current_round": round_num,
-                "current_stage": f"review ({review.result}) + audit ({audit.result})",
-                "history": [m.__dict__ for m in self.overview.entries],
-                "final_result": None,
-            })
+            _emit_event(cfg, "stage.end", stage="review+audit", round=round_num,
+                         review_result=review.result, audit_result=audit.result)
 
             self.reporter.on_round_result(round_num, max_rounds, review, audit)
             await self.hooks.run_async("post-round",
@@ -961,13 +1224,7 @@ class QCFEngine:
                     _auto_commit(cfg, round_num, stage_name)
 
                 self.overview.print_final_summary()
-                _write_status(cfg.status_file, {
-                    "current_round": round_num,
-                    "current_stage": "completed",
-                    "history": [m.__dict__ for m in self.overview.entries],
-                    "final_result": "PASS — all checks passed",
-                    "result_analysis": f"review: {review.summary}\naudit: {audit.summary}",
-                })
+                _emit_event(cfg, "pipeline.end", result="PASS", round=round_num)
                 return "PASS"
 
             # FAIL → next round
@@ -989,7 +1246,9 @@ class QCFEngine:
             if audit.action_suggestion == "REPLAN" or self._consecutive_fails >= cfg.max_consecutive_fails:
                 print(f"\n  ⛔ REPLAN triggered — escalation to evolution sandbox")
                 print(f"    action_suggestion={audit.action_suggestion}, consecutive_fails={self._consecutive_fails}")
-                _write_status(cfg.status_file, {"current_stage": "replan"})
+                _emit_event(cfg, "replan",
+                             reason="audit_replan" if audit.action_suggestion == "REPLAN" else "max_consecutive_fails",
+                             round=round_num, consecutive_fails=self._consecutive_fails)
                 # Write fail report before escalation (design requires escalation report)
                 report_text = _write_fail_report(cfg, round_num, review, audit)
                 fail_reports.append(report_text)
@@ -1026,14 +1285,8 @@ class QCFEngine:
         })
 
         self.overview.print_final_summary()
-        _write_status(cfg.status_file, {
-            "current_round": max_rounds,
-            "current_stage": "failed",
-            "history": [m.__dict__ for m in self.overview.entries],
-            "final_result": f"FAIL — max rounds ({max_rounds}) reached. "
-                           f"review: {last_review.result}, audit: {last_audit.result}",
-            "fail_analysis": report_text,
-        })
+        _emit_event(cfg, "pipeline.end", result="FAIL", round=max_rounds,
+                     reason=f"max rounds ({max_rounds}) reached")
         return "FAIL"
 
     async def _handle_replan(
@@ -1069,15 +1322,10 @@ class QCFEngine:
         print(f"  Starting task: {task_path.name}")
         print(f"{_bold('=' * 50)}\n")
 
-        _write_status(cfg.status_file, {
-            "continuous": True,
-            "task": str(task_path),
-            "started_at": _now(),
-            "iteration": 1,
-            "current_stage": "tech-lead",
-            "history": [],
-            "final_result": None,
-        })
+        _emit_event(cfg, "pipeline.start",
+                     mode="continuous",
+                     task=str(task_path),
+                     started_at=_now())
 
         current_task = task_path
         iteration = 1
@@ -1100,10 +1348,9 @@ class QCFEngine:
             # Handle REPLAN from inner loop
             if result == "REPLAN":
                 print(f"\n  [QCF] Inner loop returned REPLAN — evolution sandbox initiated.")
-                _write_status(cfg.status_file, {
-                    "current_stage": "replan",
-                    "final_result": "REPLAN — evolution triggered",
-                })
+                _emit_event(cfg, "pipeline.end", result="REPLAN",
+                             iteration=iteration,
+                             reason="inner_loop_replan")
                 break
 
             # Build round history for pilot
@@ -1125,11 +1372,8 @@ class QCFEngine:
                 print(f"\n{_bold('=' * 50)}")
                 print(f"  {_green('✅')} {_bold(f'Quad-Core Flow reached STEADY STATE after {iteration} iteration(s)')}")
                 print(f"{_bold('=' * 50)}")
-                _write_status(cfg.status_file, {
-                    "current_stage": "steady_state",
-                    "iteration": iteration,
-                    "final_result": "STEADY_STATE — all tasks complete",
-                })
+                _emit_event(cfg, "pipeline.end", result="STEADY_STATE",
+                             iteration=iteration)
                 break
 
             # New task generated by Pilot — produce summary pack for next iteration
@@ -1148,10 +1392,8 @@ class QCFEngine:
                 print(f"  Summary pack written to {cfg.summary_pack_file}")
 
             print(f"\n  → New task discovered: {current_task.name}")
-            _write_status(cfg.status_file, {
-                "current_stage": f"pilot → new task: {current_task.name}",
-                "iteration": iteration + 1,
-            })
+            _emit_event(cfg, "iteration.end", iteration=iteration,
+                         new_task=current_task.name)
 
             # Reset overview for next iteration
             self.overview = RoundsOverview()
@@ -1162,3 +1404,6 @@ class QCFEngine:
             print(f"\n{_bold('=' * 50)}")
             print(f"  {_red('⛔')} {_bold(f'Max iterations ({max_iterations}) reached — continuous loop stopped')}")
             print(f"{_bold('=' * 50)}")
+            _emit_event(cfg, "pipeline.end", result="FAIL",
+                         iteration=iteration,
+                         reason=f"max iterations ({max_iterations}) reached")

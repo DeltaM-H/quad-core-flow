@@ -392,29 +392,39 @@ def _cmd_config(args: argparse.Namespace) -> None:
 
 def _cmd_status(args: argparse.Namespace) -> None:
     from .progress import AGENT_PROGRESS_PATH
+    from .events import EventLogger
 
-    status_file = Config.load(args.config, cwd=Path.cwd()).status_file
+    cfg = Config.load(args.config, cwd=Path.cwd())
+    status_file = cfg.status_file
 
-    # Also try AGENT_PROGRESS.json for richer display
-    agent_data = None
+    # Try AGENT_PROGRESS.jsonl for richer display
+    agent_events: list[dict] = []
     if AGENT_PROGRESS_PATH.exists():
         try:
-            agent_data = json.loads(AGENT_PROGRESS_PATH.read_text())
-        except (json.JSONDecodeError, Exception):
+            import subprocess as _sp
+            result = _sp.run(["tail", "-n", "50", str(AGENT_PROGRESS_PATH)],
+                             capture_output=True, text=True, timeout=5)
+            for line in result.stdout.strip().split("\n"):
+                if line.strip():
+                    agent_events.append(json.loads(line))
+        except Exception:
             pass
 
     if args.watch:
-        # Watch both files
         _watch_status(status_file)
         return
 
-    # One-shot display from qcf-status.json
-    if status_file.exists():
+    # One-shot display from events JSONL (primary)
+    event_logger = EventLogger(cfg.events_file)
+    events = event_logger.tail(30)
+    if events:
+        print(_format_events_status(events, agent_events))
+    elif status_file.exists():
+        # Legacy fallback
         data = json.loads(status_file.read_text())
-        print(_format_status(data, agent_data))
-    elif agent_data:
-        # Fallback to AGENT_PROGRESS.json
-        print(_format_agent_status(agent_data))
+        print(_format_status(data))
+    elif agent_events:
+        print(_format_agent_status(agent_events))
     else:
         print(f"No QCF status found ({status_file})")
         print("Start a QCF run first with: qcf run <design-doc>")
@@ -422,40 +432,51 @@ def _cmd_status(args: argparse.Namespace) -> None:
 
 
 def _watch_status(path: Path) -> None:
-    """Continuously monitor the status file for changes."""
+    """Continuously monitor the events JSONL for changes."""
     from .progress import AGENT_PROGRESS_PATH
+    from .events import EventLogger
 
-    last_content = ""
-    last_agent_content = ""
+    cfg = Config.load(cwd=Path.cwd())
+    event_logger = EventLogger(cfg.events_file)
+
+    last_events_count = 0
+    last_agent_count = 0
     try:
         while True:
-            # Read both status files
-            agent_data = None
-            if AGENT_PROGRESS_PATH.exists():
-                agent_content = AGENT_PROGRESS_PATH.read_text()
-                if agent_content != last_agent_content:
-                    last_agent_content = agent_content
-                    try:
-                        agent_data = json.loads(agent_content)
-                    except (json.JSONDecodeError, Exception):
-                        pass
+            # Read from events JSONL (primary)
+            events = event_logger.tail(30)
+            events_count = len(events)
 
-            if path.exists():
-                content = path.read_text()
-                if content != last_content or agent_data:
-                    last_content = content
-                    try:
-                        data = json.loads(content)
-                        os.system("clear")
-                        print(_format_status(data, agent_data))
-                    except (json.JSONDecodeError, Exception):
-                        print(f"[{time.strftime('%H:%M:%S')}] (status file updating...)")
-            elif agent_data:
+            # Read from AGENT_PROGRESS.jsonl (dashboard)
+            agent_events: list[dict] = []
+            if AGENT_PROGRESS_PATH.exists():
+                try:
+                    import subprocess as _sp
+                    result = _sp.run(["tail", "-n", "50", str(AGENT_PROGRESS_PATH)],
+                                     capture_output=True, text=True, timeout=5)
+                    for line in result.stdout.strip().split("\n"):
+                        if line.strip():
+                            agent_events.append(json.loads(line))
+                except Exception:
+                    pass
+
+            if events_count > 0 and (events_count != last_events_count or len(agent_events) != last_agent_count):
+                last_events_count = events_count
+                last_agent_count = len(agent_events)
                 os.system("clear")
-                print(_format_agent_status(agent_data))
+                print(_format_events_status(events, agent_events))
+            elif events_count == 0 and path.exists():
+                # Legacy fallback
+                content = path.read_text()
+                try:
+                    data = json.loads(content)
+                    os.system("clear")
+                    print(_format_status(data))
+                except (json.JSONDecodeError, Exception):
+                    print(f"[{time.strftime('%H:%M:%S')}] (status file updating...)")
             else:
                 os.system("clear")
-                print(f"Pipeline status file not found: {path}")
+                print(f"Pipeline events file not found: {cfg.events_file}")
                 print("Waiting for QCF to start...")
 
             time.sleep(1)
@@ -463,47 +484,131 @@ def _watch_status(path: Path) -> None:
         print("\nStatus watch stopped.")
 
 
-def _format_agent_status(data: dict) -> str:
-    """Format AGENT_PROGRESS.json for display."""
+def _format_agent_status(events: list[dict]) -> str:
+    """Format AGENT_PROGRESS.jsonl events for display."""
     _G = "\033[32m"
     _R = "\033[31m"
     _B = "\033[1m"
     _X = "\033[0m"
 
+    # Aggregate from events
+    target = "N/A"
+    max_rounds = "N/A"
+    current_stage = "N/A"
+    current_round = "?"
+    for e in reversed(events):
+        if e.get("event") == "init":
+            target = e.get("target", "N/A")
+            max_rounds = e.get("max_rounds", "N/A")
+        if e.get("event") == "stage_start":
+            current_stage = e.get("stage", "N/A")
+            current_round = e.get("round", "?")
+        if e.get("event") == "stage_end":
+            current_stage = f"{e.get('stage', '?')} ({e.get('status', 'done')})"
+
     lines = []
     lines.append(f"{_B}{'=' * 50}{_X}")
     lines.append(f"  {_B}⚡ Quad-Core Flow — Dashboard{_X}")
     lines.append(f"{_B}{'=' * 50}{_X}")
-    lines.append(f"  Target:    {data.get('target', 'N/A')}")
-    lines.append(f"  Stage:     {data.get('current_stage', 'N/A')}")
-    lines.append(f"  Round:     {data.get('round', 'N/A')}/{data.get('max_rounds', 'N/A')}")
-    lines.append(f"  Next:      {data.get('next_action', 'N/A')}")
+    lines.append(f"  Target:    {target}")
+    lines.append(f"  Stage:     {current_stage}")
+    lines.append(f"  Round:     {current_round}/{max_rounds}")
 
-    action = data.get('action_suggestion', 'RETRY')
-    colored_action = f"{_R}REPLAN{_X}" if action == "REPLAN" else f"{_G}RETRY{_X}"
-    lines.append(f"  Suggestion:{colored_action}")
-
-    failed = data.get('failed_stages', [])
-    if failed:
-        lines.append(f"  Failed:    {_R}{', '.join(failed)}{_X}")
-
-    tasks_done = data.get('tasks_done', [])
-    if tasks_done:
-        lines.append(f"  {'─' * 48}")
-        for t in tasks_done[-5:]:
-            lines.append(f"    ✓ {t}")
-
-    history = data.get('history', [])
+    # Event history
+    history = [e for e in events if e.get("event") in ("stage_start", "stage_end")]
     if history:
         lines.append(f"  {'─' * 48}")
-        for h in history[-8:]:
-            stage = h.get('stage', '?')
-            result = h.get('result', '?')
-            rnd = h.get('round', '?')
-            icon = {"PASS": "✓", "FAIL": "✗", "TIMEOUT": "⏱", "SKIP": "→", "REPLAN": "⛔"}.get(result, "?")
+        for h in history[-12:]:
+            stage = h.get("stage", h.get("event", "?"))
+            result = h.get("result", h.get("status", "?"))
+            rnd = h.get("round", "?")
+            icon = {"PASS": "✓", "FAIL": "✗", "TIMEOUT": "⏱", "SKIP": "→", "REPLAN": "⛔"}.get(result, "→")
             colored = _G if result == "PASS" else (_R if result in ("FAIL", "TIMEOUT", "REPLAN") else "")
             reset = _X if colored else ""
-            lines.append(f"  {colored}{icon}{reset} round-{rnd} {stage:<15s} {colored}{result}{reset}")
+            evt_type = h.get("event", "")
+            if evt_type == "stage_start" or not result:
+                lines.append(f"  → round-{rnd} {stage:<15s}")
+            else:
+                lines.append(f"  {colored}{icon}{reset} round-{rnd} {stage:<15s} {colored}{result}{reset}")
+
+    lines.append(f"{_B}{'=' * 50}{_X}")
+    return "\n".join(lines)
+
+
+def _format_events_status(events: list[dict], agent_events: list[dict] | None = None) -> str:
+    """Format unified events JSONL for status display."""
+    _G = "\033[32m"
+    _R = "\033[31m"
+    _B = "\033[1m"
+    _X = "\033[0m"
+
+    # Extract key info from events
+    design_doc = ""
+    max_rounds = 3
+    for e in reversed(events):
+        if e.get("event") == "pipeline.start":
+            design_doc = e.get("design_doc", "")
+            max_rounds = e.get("max_rounds", 3)
+            break
+
+    # Build stage history from events
+    stage_history: list[dict] = []
+    for e in events:
+        evt = e.get("event", "")
+        if evt == "stage.end":
+            stage = e.get("stage", "")
+            result = e.get("result", e.get("status", ""))
+            stage_history.append({
+                "stage": stage,
+                "result": result,
+                "round": e.get("round", ""),
+                "tokens_in": e.get("tokens_in", 0),
+                "tokens_out": e.get("tokens_out", 0),
+            })
+
+    lines = []
+    lines.append(f"{_B}{'=' * 50}{_X}")
+    ts = events[-1].get("ts", "") if events else ""
+    lines.append(f"  {_B}⚡ Quad-Core Flow{_X}  {ts}")
+    lines.append(f"{_B}{'=' * 50}{_X}")
+
+    # Current stage from latest stage.start
+    current_stage = "N/A"
+    current_round = "?"
+    for e in reversed(events):
+        if e.get("event") == "stage.start":
+            current_stage = e.get("stage", "N/A")
+            current_round = e.get("round", "?")
+            break
+
+    lines.append(f"  Stage:     {current_stage}")
+    lines.append(f"  Round:     {current_round}/{max_rounds}")
+    if design_doc:
+        lines.append(f"  Document:  {Path(design_doc).name}")
+
+    if stage_history:
+        lines.append(f"  {'─' * 48}")
+        for h in stage_history:
+            stage = h.get("stage", "?")
+            result = h.get("result", "?")
+            inp = h.get("tokens_in", 0)
+            out = h.get("tokens_out", 0)
+            icon = {"PASS": "✓", "FAIL": "✗", "TIMEOUT": "⏱", "SKIP": "→"}.get(result, "?")
+            colored_res = _G + result + _X if result == "PASS" else (_R + result + _X if result in ("FAIL", "TIMEOUT") else result)
+            colored_icon = _G + icon + _X if result == "PASS" else (_R + icon + _X if result in ("FAIL", "TIMEOUT") else icon)
+            if inp or out:
+                lines.append(f"  {colored_icon} {stage:<20s} {colored_res:<8s} {inp:>6,} in / {out:>6,} out")
+            else:
+                lines.append(f"  {colored_icon} {stage:<20s} {colored_res:<8s}")
+
+    # Check for final result
+    for e in reversed(events):
+        if e.get("event") == "pipeline.end":
+            final_result = e.get("result", "")
+            lines.append(f"  {'─' * 48}")
+            colored_final = _G + "PASS" + _X if "PASS" in final_result else (_R + final_result + _X if final_result else final_result)
+            lines.append(f"  Final:     {colored_final}")
+            break
 
     lines.append(f"{_B}{'=' * 50}{_X}")
     return "\n".join(lines)
@@ -633,6 +738,24 @@ def _cmd_worktree(args: argparse.Namespace) -> None:
             sys.exit(1)
 
 
+def _cmd_events(args: argparse.Namespace) -> None:
+    """Show pipeline events from the unified events JSONL (P3-10)."""
+    from .events import EventLogger
+
+    cfg = Config.load(args.config, cwd=Path.cwd())
+    logger = EventLogger(cfg.events_file)
+
+    if args.follow:
+        try:
+            subprocess.run(["tail", "-f", str(cfg.events_file)])
+        except KeyboardInterrupt:
+            print("\nEvents follow stopped.")
+    else:
+        events = logger.tail(args.tail)
+        for e in events:
+            print(json.dumps(e, ensure_ascii=False))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="qcf",
@@ -715,6 +838,13 @@ def main() -> None:
     p_wt_remove = p_wt_sub.add_parser("remove", help="Remove a worktree")
     p_wt_remove.add_argument("path", help="Path to the worktree to remove")
 
+    # events
+    p_events = sub.add_parser("events", help="Show pipeline events from unified events JSONL")
+    p_events.add_argument("--tail", "-n", type=int, default=20,
+                          help="Number of recent events to show (default: 20)")
+    p_events.add_argument("--follow", "-f", action="store_true",
+                          help="Follow events in real-time (tail -f)")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -735,6 +865,8 @@ def main() -> None:
         asyncio.run(_cmd_evolve(args))
     elif args.command == "worktree":
         _cmd_worktree(args)
+    elif args.command == "events":
+        _cmd_events(args)
     elif args.command == "version":
         _cmd_version(args)
 

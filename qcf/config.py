@@ -87,6 +87,13 @@ class Config:
 
     # ── Summary pack ──
     summary_pack_file: Path = Path("/tmp/qcf-summary-pack.json")
+    summary_pack_max_bytes: int = 12288
+
+    # ── Artifact validation ──
+    artifact_validation_mode: str = "hard"  # "hard" | "warn"
+
+    # ── Unified event log ──
+    events_file: Path = Path("/tmp/qcf-events.jsonl")
 
     # ── Evolution / Self-Improvement ──
     evolution_enabled: bool = True
@@ -284,6 +291,19 @@ class Config:
                 d = Path(section["hooks_dir"])
                 cfg.hooks_dir = d if d.is_absolute() else cfg.root_dir / d
 
+        # Files (extended: events_file)
+        if "events_file" in ws:
+            cfg.events_file = Path(ws["events_file"])
+
+        # Artifact validation mode
+        stages_validation = data.get("stages", {})
+        if "artifact_validation_mode" in stages_validation:
+            cfg.artifact_validation_mode = stages_validation["artifact_validation_mode"]
+
+        # Summary pack max bytes
+        if "summary_pack_max_bytes" in stages_validation:
+            cfg.summary_pack_max_bytes = int(stages_validation["summary_pack_max_bytes"])
+
         # Evolution
         evolution = data.get("evolution", {})
         if "enabled" in evolution:
@@ -309,7 +329,8 @@ class Config:
                           "task_dir",
                           "issues_file", "review_issues_file", "audit_issues_file",
                           "pilot_task_file", "summary_pack_file",
-                          "scope_file", "summary_file"):
+                          "scope_file", "summary_file",
+                          "events_file"):
             val: Path = getattr(self, attr_name)
             if not val.is_absolute():
                 setattr(self, attr_name, anchor / val)

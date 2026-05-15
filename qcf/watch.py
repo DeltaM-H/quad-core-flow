@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from .config import Config
-from .engine import QCFEngine, _write_status
+from .engine import QCFEngine, _emit_event
 
 
 async def watch_mode(config: Config) -> None:
@@ -26,15 +26,9 @@ async def watch_mode(config: Config) -> None:
     print(f" Watching: {watch_dir}")
     print(" Waiting for new design documents...\n")
 
-    _write_status(config.status_file, {
-        "design_doc": "(watch mode)",
-        "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "max_rounds": "—",
-        "current_round": 0,
-        "current_stage": "watching",
-        "history": [],
-        "final_result": None,
-    })
+    _emit_event(config, "watch.start",
+                 watch_dir=str(watch_dir),
+                 started_at=time.strftime("%Y-%m-%d %H:%M:%S"))
 
     # Pre-populate known files so we don't re-process existing ones
     known: set[str] = set()
@@ -98,15 +92,10 @@ async def _handle_new_doc(config: Config, doc_path: Path) -> None:
     ts = time.strftime("%H:%M:%S")
     print(f"[{ts}] New design doc: {doc_path.name}")
 
-    _write_status(config.status_file, {
-        "design_doc": str(doc_path),
-        "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "max_rounds": config.max_rounds,
-        "current_round": 1,
-        "current_stage": "queued",
-        "history": [],
-        "final_result": None,
-    })
+    _emit_event(config, "pipeline.start",
+                 design_doc=str(doc_path),
+                 started_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+                 max_rounds=config.max_rounds)
 
     engine = QCFEngine(config)
     await engine.run(doc_path, max_rounds=config.max_rounds)

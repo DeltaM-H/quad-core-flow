@@ -46,11 +46,21 @@ class Issue:
 
 
 @dataclass
+class ReviewComponent:
+    """A single perspective's review result (API or Design)."""
+    perspective: str                # "api" | "design"
+    result: str                     # PASS / FAIL
+    issues: list[Issue] = field(default_factory=list)
+    summary: str = ""
+
+
+@dataclass
 class ReviewOutput:
     result: str                     # PASS / FAIL
     summary: str
     issues: list[Issue] = field(default_factory=list)
     summary_feedback: str | None = None  # SUMMARY_FEEDBACK from review (if summary insufficient)
+    components: list[ReviewComponent] = field(default_factory=list)
 
 
 @dataclass
