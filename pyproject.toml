@@ -20,4 +20,4 @@ pipeline = "qcf.cli:main"
 include = ["qcf*"]
 
 [tool.setuptools.package-data]
-qcf = ["prompts/*.j2", "default_config.toml"]
+qcf = ["default_config.toml"]

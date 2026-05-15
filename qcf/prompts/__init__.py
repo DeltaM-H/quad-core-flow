@@ -4,9 +4,8 @@ Templates are Claude Code agent .md files with YAML frontmatter
 and Jinja2 ``{{ }}`` variables in the body.  The YAML frontmatter
 is stripped on render so it does not appear in the system prompt.
 
-Default template directory is ``qcf/prompts/`` (tracked in git).
-Override via ``set_template_dir()`` at pipeline start (e.g. to load
-from ``.claude/agents/``).
+Default template directory is ``.claude/agents/`` (set via ``set_template_dir()``
+at pipeline start; falls back to ``qcf/prompts/`` for backward compatibility).
 """
 
 from __future__ import annotations
@@ -43,7 +42,7 @@ def render(template_name: str, **kwargs) -> str:
     is stripped before rendering so it does not appear in the system
     prompt sent to the Claude API.
 
-    Available templates (in ``qcf/prompts/``):
+    Available templates (in ``.claude/agents/``):
         - ``implement.md``
         - ``api-reviewer.md``
         - ``design-reviewer.md``
