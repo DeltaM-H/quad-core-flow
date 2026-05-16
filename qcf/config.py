@@ -48,6 +48,7 @@ class Config:
     issues_file: Path = Path("/tmp/qcf-issues-latest.txt")
     review_issues_file: Path = Path("/tmp/qcf-review-issues.txt")
     audit_issues_file: Path = Path("/tmp/qcf-audit-issues.txt")
+    test_issues_file: Path = Path("/tmp/qcf-test-issues.txt")
     pilot_task_file: Path = Path("/tmp/qcf-pilot-task.txt")
 
     # ── Stage artifacts (per-round, written by implement, read by review/audit) ──
@@ -62,6 +63,7 @@ class Config:
     fix_timeout: int = 600
     review_timeout: int = 300
     audit_timeout: int = 300
+    test_timeout: int = 300
     pilot_timeout: int = 120
 
     # ── Claude model overrides (empty = default) ──
@@ -69,6 +71,7 @@ class Config:
     review_model_quality: str = "sonnet"
     review_model_arch: str = "sonnet"
     audit_model: str = ""
+    test_model: str = ""
     tech_lead_model: str = ""
     implement_model: str = ""
     fix_model: str = ""
@@ -122,12 +125,14 @@ class Config:
             "fix": self.fix_timeout,
             "review": self.review_timeout,
             "audit": self.audit_timeout,
+            "test": self.test_timeout,
             "pilot": self.pilot_timeout,
         }.get(stage, 600)
 
     def model_for(self, stage: str) -> str | None:
         return {
             "security-reviewer": self.audit_model,
+            "test-agent": self.test_model,
             "api-reviewer": self.review_model_api,
             "code-quality-reviewer": self.review_model_quality,
             "arch-reviewer": self.review_model_arch,
@@ -246,6 +251,7 @@ class Config:
         files = data.get("files", {})
         for key, attr in (("issues", "issues_file"), ("review_issues", "review_issues_file"),
                           ("audit_issues", "audit_issues_file"),
+                          ("test_issues", "test_issues_file"),
                           ("scope", "scope_file"), ("summary", "summary_file")):
             if key in files:
                 setattr(cfg, attr, Path(files[key]))
@@ -253,7 +259,7 @@ class Config:
         # Stages
         stages = data.get("stages", {})
         for key in ("max_rounds", "tech_lead_timeout", "implement_timeout",
-                     "fix_timeout", "review_timeout", "audit_timeout", "pilot_timeout"):
+                     "fix_timeout", "review_timeout", "audit_timeout", "test_timeout", "pilot_timeout"):
             if key in stages:
                 setattr(cfg, key, stages[key])
 
@@ -267,6 +273,7 @@ class Config:
             "tech-lead": "tech_lead_model",
             "implement": "implement_model",
             "fix": "fix_model",
+            "test-agent": "test_model",
             "pilot": "pilot_model",
         }
         for key, attr in key_map.items():
@@ -352,7 +359,7 @@ class Config:
                           "tech_lead_dir",
                           "coder_dir", "out_review_dir", "fail_dir",
                           "task_dir",
-                          "issues_file", "review_issues_file", "audit_issues_file",
+                          "issues_file", "review_issues_file", "audit_issues_file", "test_issues_file",
                           "pilot_task_file", "summary_pack_file",
                           "scope_file", "summary_file",
                           "events_file",

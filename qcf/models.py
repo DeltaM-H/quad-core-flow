@@ -77,6 +77,14 @@ class AuditOutput:
 
 
 @dataclass
+class TestOutput:
+    """Test execution result."""
+    result: str                     # PASS / FAIL
+    summary: str
+    failures: list[Issue] = field(default_factory=list)
+
+
+@dataclass
 class StageMetrics:
     input_tokens: int = 0
     output_tokens: int = 0
@@ -87,7 +95,7 @@ class StageMetrics:
 @dataclass
 class RoundStageMetric:
     """Single-stage entry in the round overview."""
-    stage: str                      # implement / fix / review / audit
+    stage: str                      # implement / fix / review / audit / test
     result: str                     # PASS / FAIL / TIMEOUT / SKIP / -
     input_tokens: int = 0
     output_tokens: int = 0
@@ -113,7 +121,7 @@ class RoundsOverview:
 
     def print_round_summary(self, round_num: int, max_rounds: int) -> None:
         round_entries = [e for e in self.entries
-                         if e.stage in ("implement", "fix", "review", "audit")]
+                         if e.stage in ("implement", "fix", "review", "audit", "test")]
         tail = round_entries[-(4 if len(round_entries) >= 4 else len(round_entries)):]
 
         print(f"\n  ── Round {round_num:02d}/{max_rounds} 概览 ──")
@@ -148,6 +156,7 @@ class RoundsOverview:
 
 _REVIEW_PATTERN = re.compile(r"REVIEW_RESULT\s*:\s*(PASS|FAIL)", re.IGNORECASE)
 _AUDIT_PATTERN = re.compile(r"AUDIT_RESULT\s*:\s*(PASS|FAIL)", re.IGNORECASE)
+_TEST_PATTERN = re.compile(r"TEST_RESULT\s*:\s*(PASS|FAIL)", re.IGNORECASE)
 _ACTION_SUGGESTION_PATTERN = re.compile(r"ACTION_SUGGESTION\s*:\s*(RETRY|REPLAN)", re.IGNORECASE)
 
 
@@ -161,6 +170,14 @@ def extract_review_result(text: str) -> tuple[Optional[str], str]:
 
 def extract_audit_result(text: str) -> tuple[Optional[str], str]:
     m = _AUDIT_PATTERN.search(text)
+    result = m.group(1).upper() if m else None
+    lines = [l.strip() for l in text.strip().split("\n") if l.strip()]
+    summary = lines[-1] if lines else ""
+    return result, summary
+
+
+def extract_test_result(text: str) -> tuple[Optional[str], str]:
+    m = _TEST_PATTERN.search(text)
     result = m.group(1).upper() if m else None
     lines = [l.strip() for l in text.strip().split("\n") if l.strip()]
     summary = lines[-1] if lines else ""

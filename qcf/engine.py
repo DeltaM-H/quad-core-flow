@@ -22,9 +22,11 @@ from .models import (
     ReviewOutput,
     RoundStageMetric,
     RoundsOverview,
+    TestOutput,
     extract_audit_result,
     extract_action_suggestion,
     extract_review_result,
+    extract_test_result,
 )
 from .progress import AgentProgress
 from . import prompts
@@ -144,7 +146,7 @@ def _collect_atomic_task_files(cfg: Config, original_task: Path) -> list[Path]:
 def _clean_stage_artifacts(cfg: Config) -> None:
     """Remove stage artifacts so the next subtask starts with clean state."""
     for f in (cfg.scope_file, cfg.summary_file, cfg.issues_file,
-              cfg.review_issues_file, cfg.audit_issues_file):
+              cfg.review_issues_file, cfg.audit_issues_file, cfg.test_issues_file):
         f.unlink(missing_ok=True)
     # Also clean .incomplete variants from timeout handling
     for f in (cfg.scope_file, cfg.summary_file):
@@ -826,6 +828,53 @@ async def _run_audit(
                        action_suggestion=action_suggestion)
 
 
+async def _run_test(
+    cfg: Config,
+    round_num: int,
+    scope_file_path: Path,
+    summary_file_path: Path,
+) -> TestOutput:
+    _emit_event(cfg, "stage.start", stage="test", round=round_num)
+    prompt_text = prompts.test_agent_prompt(
+        round_num=round_num,
+        scope_file_path=str(scope_file_path),
+        summary_file_path=str(summary_file_path),
+        test_issues_file=str(cfg.test_issues_file),
+    )
+    log_path = cfg.log_dir / f"qcf-test-agent-{round_num:02d}.log"
+    result_text, metrics = await run_claude(
+        prompt_text, log_path,
+        timeout=cfg.test_timeout,
+        model=cfg.model_for("test-agent"),
+        allowed_tools=["Read", "Bash", "Write"],
+        output_format=cfg.output_format,
+        thinking_budget=cfg.thinking_budget,
+        cwd=cfg.root_dir,
+    )
+
+    result, summary = extract_test_result(result_text)
+    if not result:
+        result = "FAIL"
+        summary = summary or "[结果解析失败]"
+
+    failures: list[Issue] = []
+    if cfg.test_issues_file.exists():
+        for line in cfg.test_issues_file.read_text().strip().split("\n"):
+            issue = Issue.from_line(line)
+            if issue:
+                issue.source = "test"
+                failures.append(issue)
+
+    colored_res = _color_result(result) + (_red(" | TIMEOUT") if metrics.timed_out else "")
+    print(f"  ⚡ Test: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
+    print(f"     ↳ {summary[:120]}")
+
+    _emit_event(cfg, "stage.end", stage="test-agent", round=round_num,
+                result=result, tokens_in=metrics.input_tokens, tokens_out=metrics.output_tokens)
+
+    return TestOutput(result=result, summary=summary, failures=failures)
+
+
 # ══════════════════════════════════════════════════════════════
 # Commit & fail report
 # ══════════════════════════════════════════════════════════════
@@ -859,7 +908,8 @@ def _auto_commit(cfg: Config, round_num: int, stage_name: str = "implement") -> 
         print("  → Commit failed.")
 
 
-def _write_fail_report(cfg: Config, round_num: int, review: ReviewOutput, audit: AuditOutput) -> str:
+def _write_fail_report(cfg: Config, round_num: int, review: ReviewOutput, audit: AuditOutput,
+                        test_out: TestOutput | None = None) -> str:
     """Print fail analysis to session and write report file."""
     cfg.fail_dir.mkdir(parents=True, exist_ok=True)
     report_path = cfg.fail_dir / f"{round_num:02d}-fail-report-v1.0.md"
@@ -868,7 +918,8 @@ def _write_fail_report(cfg: Config, round_num: int, review: ReviewOutput, audit:
         "# Pipeline Fail Report\n",
         f"- **Round**: {round_num}",
         f"- **Review**: {review.result}",
-        f"- **Audit**: {audit.result}\n",
+        f"- **Audit**: {audit.result}",
+        f"- **Test**: {test_out.result if test_out else 'N/A'}\n",
         "## Review Issues\n",
     ]
     if review.issues:
@@ -886,10 +937,20 @@ def _write_fail_report(cfg: Config, round_num: int, review: ReviewOutput, audit:
     else:
         lines.append("(no detailed issue list)")
 
+    lines.extend(["\n## Test Failures\n"])
+    if test_out and test_out.failures:
+        for f_ in test_out.failures:
+            src = f" [{f_.source}]" if f_.source else ""
+            lines.append(f"- [{f_.severity}]{src} `{f_.file}`: {f_.description}")
+    else:
+        lines.append("(no detailed issue list)")
+
     lines.append(f"\n## Fail Summary\n")
     lines.append(f"QCF failed at round {round_num}/{cfg.max_rounds}.")
     lines.append(f"Review: {review.result} — {review.summary}" if review.summary else f"Review: {review.result}")
     lines.append(f"Audit: {audit.result} — {audit.summary}" if audit.summary else f"Audit: {audit.result}")
+    if test_out:
+        lines.append(f"Test: {test_out.result} — {test_out.summary}" if test_out.summary else f"Test: {test_out.result}")
 
     report_text = "\n".join(lines)
 
@@ -913,6 +974,15 @@ def _write_fail_report(cfg: Config, round_num: int, review: ReviewOutput, audit:
         for v in audit.vulnerabilities:
             src = f" [{v.source}]" if v.source else ""
             print(f"    [{v.severity.upper()}]{src} {v.file}: {v.description}")
+    if test_out:
+        print(f"\n  Test: {test_out.result}")
+        if test_out.summary:
+            print(f"  Summary: {test_out.summary}")
+        if test_out.failures:
+            print(f"\n  ── Test Failures ({len(test_out.failures)}) ──")
+            for f_ in test_out.failures:
+                src = f" [{f_.source}]" if f_.source else ""
+                print(f"    [{f_.severity.upper()}]{src} {f_.file}: {f_.description}")
     print(f"{'=' * 50}")
 
     report_path.write_text(report_text)
@@ -923,8 +993,9 @@ def _write_fail_report(cfg: Config, round_num: int, review: ReviewOutput, audit:
 
 
 def _save_final_reports(cfg: Config, round_num: int, final_result: str,
-                        review: ReviewOutput, audit: AuditOutput) -> None:
-    """Write a consolidated iteration summary with api / quality / security sections."""
+                        review: ReviewOutput, audit: AuditOutput,
+                        test_out: TestOutput | None = None) -> None:
+    """Write a consolidated iteration summary with api / quality / security / test sections."""
     from .models import ScopeOutput
 
     scope = ScopeOutput.from_file(cfg.scope_file)
@@ -989,6 +1060,15 @@ def _save_final_reports(cfg: Config, round_num: int, final_result: str,
         extra=f"\n**Action Suggestion**: {audit.action_suggestion}",
     )
 
+    # ── Test section ──
+    test_section = _section(
+        "4. Test Results",
+        test_out.result if test_out else "N/A",
+        test_out.summary if test_out else "(not executed)",
+        test_out.failures if test_out else [],
+        "Failed tests",
+    )
+
     report = f"""# QCF Iteration Summary — Round {round_num}
 
 **Overall Result**: {final_result}
@@ -1004,6 +1084,7 @@ def _save_final_reports(cfg: Config, round_num: int, final_result: str,
 {api_section}
 {quality_section}
 {security_section}
+{test_section}
 """
 
     out_path = cfg.out_review_dir / f"round-{round_num:02d}-summary-v1.0.md"
@@ -1361,6 +1442,7 @@ class QCFEngine:
         round_num = 1
         last_review = ReviewOutput(result="N/A", summary="")
         last_audit = AuditOutput(result="N/A", summary="")
+        last_test = TestOutput(result="N/A", summary="")
         fail_reports: list[str] = []
 
         while round_num <= max_rounds:
@@ -1416,6 +1498,8 @@ class QCFEngine:
                                                    summary="[implement/fix timed out]"))
                 self.overview.add(RoundStageMetric(stage="audit", result="SKIP",
                                                    summary="[implement/fix timed out]"))
+                self.overview.add(RoundStageMetric(stage="test", result="SKIP",
+                                                   summary="[implement/fix timed out]"))
                 progress.update_on_complete({
                     "stage": stage_name, "round": round_num,
                     "status": "TIMEOUT",
@@ -1456,7 +1540,7 @@ class QCFEngine:
                 if cfg.artifact_validation_mode == "hard":
                     print(f"  → Hard gate: blocking pipeline, entering next fix round")
                     _write_validation_fail(cfg, round_num, validation_errors)
-                    # Treat as FAIL — skip review+audit, go to next round
+                    # Treat as FAIL — skip review+audit+test, go to next round
                     self._consecutive_fails += 1
                     self.overview.add(RoundStageMetric(
                         stage="artifact_validation", result="FAIL",
@@ -1464,6 +1548,8 @@ class QCFEngine:
                     self.overview.add(RoundStageMetric(stage="review", result="SKIP",
                                                        summary="[blocked by validation]"))
                     self.overview.add(RoundStageMetric(stage="audit", result="SKIP",
+                                                       summary="[blocked by validation]"))
+                    self.overview.add(RoundStageMetric(stage="test", result="SKIP",
                                                        summary="[blocked by validation]"))
 
                     if self._consecutive_fails >= cfg.max_consecutive_fails:
@@ -1479,16 +1565,16 @@ class QCFEngine:
                 else:
                     print(f"  → Warm mode: validation failed but continuing ({cfg.artifact_validation_mode})")
 
-            # ── Stage 2: Review (API + Design) + Audit (parallel) ──
+            # ── Stage 2: Review (API + Design) + Audit + Test (parallel) ──
             self.reporter.on_stage_start(round_num, max_rounds, "review")
-            await self.hooks.run_async("pre-stage", stage="review+audit", round=round_num)
-            progress.update_before_round("review+audit", round_num,
+            await self.hooks.run_async("pre-stage", stage="review+audit+test", round=round_num)
+            progress.update_before_round("review+audit+test", round_num,
                 target=design_doc.stem.replace("-design", ""),
                 tasks_done_summary=f"{len(self.overview.entries)} stages completed",
-                next_action_hint=f"[Round {round_num}/{max_rounds}] Reviewing + auditing")
-            _emit_event(cfg, "stage.start", stage="review+audit", round=round_num)
+                next_action_hint=f"[Round {round_num}/{max_rounds}] Reviewing + auditing + testing")
+            _emit_event(cfg, "stage.start", stage="review+audit+test", round=round_num)
 
-            # Run 2 review perspectives + audit in parallel (arch moved to design stage)
+            # Run 2 review perspectives + audit + test in parallel
             review_api_task = _run_api_reviewer(cfg, round_num=round_num,
                                                summary_file_path=cfg.summary_file,
                                                scope_file_path=cfg.scope_file)
@@ -1498,16 +1584,20 @@ class QCFEngine:
             audit_task = _run_audit(cfg, round_num=round_num,
                                      scope_file_path=cfg.scope_file,
                                      summary_file_path=cfg.summary_file)
-            review_api, review_quality, audit = await asyncio.gather(
-                review_api_task, review_quality_task, audit_task)
+            test_task = _run_test(cfg, round_num=round_num,
+                                   scope_file_path=cfg.scope_file,
+                                   summary_file_path=cfg.summary_file)
+            review_api, review_quality, audit, test_out = await asyncio.gather(
+                review_api_task, review_quality_task, audit_task, test_task)
 
             # Merge review perspectives
             review = _merge_review_results(review_api, review_quality)
 
-            last_review, last_audit = review, audit
+            last_review, last_audit, last_test = review, audit, test_out
 
             print(f"[QCF] stage: review(api={review_api.result}, quality={review_quality.result}) → {review.result}")
             print(f"[QCF] stage: audit → {audit.result}")
+            print(f"[QCF] stage: test → {test_out.result}")
             print(f"[QCF] action_suggestion → {audit.action_suggestion}")
 
             # Summary feedback tracking
@@ -1520,9 +1610,13 @@ class QCFEngine:
             self.overview.add(RoundStageMetric(
                 stage="audit", result=audit.result, summary=audit.summary,
             ))
+            self.overview.add(RoundStageMetric(
+                stage="test", result=test_out.result, summary=test_out.summary,
+            ))
 
-            _emit_event(cfg, "stage.end", stage="review+audit", round=round_num,
-                         review_result=review.result, audit_result=audit.result)
+            _emit_event(cfg, "stage.end", stage="review+audit+test", round=round_num,
+                         review_result=review.result, audit_result=audit.result,
+                         test_result=test_out.result)
 
             self.reporter.on_round_result(round_num, max_rounds, review, audit)
             await self.hooks.run_async("post-round",
@@ -1534,6 +1628,7 @@ class QCFEngine:
             all_issues: list[Issue] = []
             all_issues.extend(review.issues)
             all_issues.extend(audit.vulnerabilities)
+            all_issues.extend(test_out.failures)
             if all_issues:
                 cfg.issues_file.write_text("\n".join(i.to_line() for i in all_issues))
                 os.chmod(cfg.issues_file, 0o600)
@@ -1542,7 +1637,7 @@ class QCFEngine:
             self.overview.print_round_summary(round_num, max_rounds)
 
             # ── Decision ──
-            if review.result == "PASS" and audit.result == "PASS":
+            if review.result == "PASS" and audit.result == "PASS" and test_out.result == "PASS":
                 self._consecutive_fails = 0
                 print(f"[QCF] round {round_num} → PASS")
                 self.reporter.on_passed(round_num, review, audit)
@@ -1557,7 +1652,7 @@ class QCFEngine:
                     "next_action": "completed",
                 })
 
-                _save_final_reports(cfg, round_num, "PASS", review, audit)
+                _save_final_reports(cfg, round_num, "PASS", review, audit, test_out=test_out)
                 if not self._no_commit:
                     _auto_commit(cfg, round_num, stage_name)
 
@@ -1573,7 +1668,7 @@ class QCFEngine:
             progress.update_on_complete({
                 "stage": "round", "round": round_num,
                 "status": "FAIL",
-                "failed_stages": [s for s, r in [("review", review.result), ("audit", audit.result)] if r != "PASS"],
+                "failed_stages": [s for s, r in [("review", review.result), ("audit", audit.result), ("test", test_out.result)] if r != "PASS"],
                 "action_suggestion": audit.action_suggestion,
                 "next_action": "evolution sandbox" if (
                     audit.action_suggestion == "REPLAN" or self._consecutive_fails >= cfg.max_consecutive_fails
@@ -1588,12 +1683,12 @@ class QCFEngine:
                              reason="audit_replan" if audit.action_suggestion == "REPLAN" else "max_consecutive_fails",
                              round=round_num, consecutive_fails=self._consecutive_fails)
                 # Write fail report before escalation (design requires escalation report)
-                report_text = _write_fail_report(cfg, round_num, review, audit)
+                report_text = _write_fail_report(cfg, round_num, review, audit, test_out=test_out)
                 fail_reports.append(report_text)
                 await self._handle_replan(cfg, fail_reports, design_content)
                 return "REPLAN"
 
-            fails = [s for s, r in [("review", review.result), ("audit", audit.result)] if r != "PASS"]
+            fails = [s for s, r in [("review", review.result), ("audit", audit.result), ("test", test_out.result)] if r != "PASS"]
             await self.hooks.run_async("on-failed",
                 round=round_num, max_rounds=max_rounds,
                 failed_stages=",".join(fails),
@@ -1601,14 +1696,14 @@ class QCFEngine:
                 review_summary=review.summary, audit_summary=audit.summary)
 
             # Build fail report for evolution context
-            report_text = _write_fail_report(cfg, round_num, review, audit)
+            report_text = _write_fail_report(cfg, round_num, review, audit, test_out=test_out)
             fail_reports.append(report_text)
 
             round_num += 1
 
         # ── Max rounds exhausted ──
-        _save_final_reports(cfg, max_rounds, "FAIL", last_review, last_audit)
-        report_text = _write_fail_report(cfg, max_rounds, last_review, last_audit)
+        _save_final_reports(cfg, max_rounds, "FAIL", last_review, last_audit, test_out=last_test)
+        report_text = _write_fail_report(cfg, max_rounds, last_review, last_audit, test_out=last_test)
         fail_reports.append(report_text)
         self.reporter.on_exhausted(round_num, max_rounds, last_review, last_audit, report_text)
         await self.hooks.run_async("on-exhausted",

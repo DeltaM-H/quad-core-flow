@@ -1,26 +1,26 @@
 # Quad-Core Flow (QCF)
 
-**QCF** is a multi-agent AI pipeline that automates software development. Given a task description, it orchestrates Claude agents through a structured loop — Tech-Lead → Architecture Review → Implement/Fix → API + Quality Review → Security Audit → Pilot — producing production-ready code from requirements.
+**QCF** is a multi-agent AI pipeline that automates software development. Given a task description, it orchestrates Claude agents through a structured loop — Tech-Lead → Architecture Review → Implement/Fix → API + Quality Review + Security Audit + Test → Pilot — producing production-ready code from requirements.
 
 ## Pipeline
 
 ```
-                           ┌───────────────────────────────────────┐
-  Task ──► Tech-Lead ─────► Arch-Review ──► Coder ──► Review ──► Audit
-                  ▲              │          (Impl/       │          │
-                  │              │            Fix)       │          │
-                  │              │          [API+Quality]│          │
-                  │              │               ▲       │          │
-                  │              ▼               │   PASS/FAIL  PASS/FAIL
-                  │          PASS/FAIL            └───┬────┬─────┘
-                  │                                   │    │
-                  └────────────────────────────────────┘    │
-                                                    │      │
-                                               ── PASS ────┘
-                                                   │
-                                               Commit
-                                                   │
-                                             (or FAIL → fix loop)
+                           ┌───────────────────────────────────────────────┐
+ Task ──► Tech-Lead ─────► Arch-Review ──► Coder ──► Review ────────► Test
+                 ▲              │          (Impl/       │    │         │
+                 │              │            Fix)       │    │         │
+                 │              │          [API+Quality]│    │         │
+                 │              │               ▲       │    │         │
+                 │              ▼               │   PASS/FAIL  │   PASS/FAIL
+                 │          PASS/FAIL            └───┬──┬──────┘     │
+                 │                                   │  │            │
+                 └────────────────────────────────────┘  │            │
+                                                   │     │           │
+                                              ── ALL PASS ──────────┘
+                                                  │
+                                              Commit
+                                                  │
+                                            (or FAIL → fix loop)
 ```
 
 After the inner loop passes, **Pilot** assesses the project and either declares steady state or produces a new task for the next iteration.
@@ -42,15 +42,16 @@ qcf auto tasks/my-task.md -c         # continuous (Pilot loop)
 | Tech-Lead         | Pre-loop  | Analyze requirements, produce a design document       |
 | Arch-Reviewer     | Pre-loop  | Review design doc for module boundaries, architecture |
 | Coder (Implement) | Loop      | Implement code from the design doc                    |
-| Fix               | Loop      | Repair code from Review/Audit issues                  |
+| Fix               | Loop      | Repair code from Review/Audit/Test issues             |
 | API Reviewer      | Loop      | Check interface signatures, backward compatibility    |
 | Quality Reviewer  | Loop      | Check naming, DRY, complexity, error handling         |
 | Auditor           | Loop      | Security audit: OWASP Top 10                          |
+| Test Agent        | Loop      | Run tests and report PASS/FAIL results                |
 | Pilot             | Post-loop | Assess project state, decide next action              |
 | Evolver           | Escalate  | Analyze pipeline failures and self-modify QCF code    |
 | Meta-Auditor      | Escalate  | Validate Evolver's self-modifications                 |
 
-The inner loop (Implement → Review → Audit) runs up to `max_rounds`. Review and Audit run in parallel. If all checks pass, results are committed and Pilot takes over. On exhaustion, code is reverted to the last commit and Pilot receives a fail report to plan recovery.
+The inner loop (Implement → Review → Audit → Test) runs up to `max_rounds`. Review, Audit, and Test run in parallel. If all checks pass, results are committed and Pilot takes over. On exhaustion, code is reverted to the last commit and Pilot receives a fail report to plan recovery.
 
 ## Commands
 
@@ -95,11 +96,13 @@ max_rounds = 3
 implement_timeout = 600
 review_timeout = 450
 audit_timeout = 300
+test_timeout = 300
 
 [models]
 "api-reviewer" = "sonnet"
 "code-quality-reviewer" = "sonnet"
 "arch-reviewer" = "opus"
+"test-agent" = "sonnet"
 
 [hooks]
 on-passed = ["notify-send 'Pipeline passed'"]
@@ -138,7 +141,7 @@ output/docs/             # Pipeline output artifacts
 
 ## Requirements
 
-- Python ≥ 3.10
+- Python >= 3.10
 - [Claude Code](https://claude.ai/code) CLI (`claude` on PATH)
 - Linux or macOS
 
