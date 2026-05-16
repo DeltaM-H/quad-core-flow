@@ -5,7 +5,7 @@
 # docs_dir = "output/docs"
 # status_file = "/tmp/qcf-status.json"
 # log_dir = "/tmp"
-
+# prompts_dir = ".claude/agents"
 [stages]
 # max_rounds = 3
 # implement_timeout = 600
