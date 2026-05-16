@@ -1364,7 +1364,7 @@ class QCFEngine:
         self.reporter = reporter or StdoutReporter()
         self.hooks = hooks or config.build_hooks()
 
-        # Load agent prompts from project .claude/agents/
+        # Load agent prompts (default: qcf/prompts/, override via qcf.toml workspace.prompts_dir)
         prompts.set_template_dir(config.prompts_dir)
 
         self.overview = RoundsOverview()

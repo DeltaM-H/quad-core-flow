@@ -3,6 +3,7 @@
 
 [workspace]
 # docs_dir = "output/docs"
+# prompts_dir = ".claude/agents"   # Agent template directory (default: bundled qcf/prompts/)
 # status_file = "/tmp/qcf-status.json"
 # log_dir = "/tmp"
 

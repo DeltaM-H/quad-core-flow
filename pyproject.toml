@@ -21,7 +21,7 @@ pipeline = "qcf.cli:main"
 include = ["qcf*"]
 
 [tool.setuptools.package-data]
-qcf = ["default_config.toml"]
+qcf = ["default_config.toml", "prompts/*.md"]
 
 [tool.setuptools.dynamic]
 version = {attr = "qcf.__version__"}

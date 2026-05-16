@@ -99,8 +99,8 @@ class Config:
     # ── Unified event log ──
     events_file: Path = Path("/tmp/qcf-events.jsonl")
 
-    # ── Agent prompts directory ──
-    prompts_dir: Path = Path(".claude/agents")
+    # ── Agent prompts directory (default: bundled templates inside qcf package) ──
+    prompts_dir: Path = Path(__file__).parent / "prompts"
 
     # ── Evolution / Self-Improvement ──
     evolution_enabled: bool = True
