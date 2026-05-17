@@ -592,6 +592,7 @@ async def _run_api_reviewer(
     scope_file_path: Path,
 ) -> ReviewOutput:
     """API Review perspective (P0-2): interface signatures, backward compatibility."""
+    _emit_event(cfg, "stage.start", stage="api-reviewer", round=round_num)
     issues_file = _review_issues_path(cfg, round_num, "api-reviewer")
     prompt_text = prompts.api_reviewer_prompt(
         round_num=round_num,
@@ -634,6 +635,8 @@ async def _run_api_reviewer(
 
     _emit_event(cfg, "verdict", stage="api-reviewer", round=round_num,
                 result=result, summary=summary[:120] if summary else "")
+    _emit_event(cfg, "stage.end", stage="api-reviewer", round=round_num,
+                result=result, tokens_in=metrics.input_tokens, tokens_out=metrics.output_tokens)
 
     return ReviewOutput(result=result, summary=summary, issues=issues,
                          summary_feedback=summary_feedback)
@@ -646,6 +649,7 @@ async def _run_code_quality_reviewer(
     scope_file_path: Path,
 ) -> ReviewOutput:
     """Code Quality Review perspective: naming, DRY, complexity, error handling."""
+    _emit_event(cfg, "stage.start", stage="code-quality-reviewer", round=round_num)
     issues_file = _review_issues_path(cfg, round_num, "code-quality-reviewer")
     prompt_text = prompts.code_quality_reviewer_prompt(
         round_num=round_num,
@@ -688,6 +692,8 @@ async def _run_code_quality_reviewer(
 
     _emit_event(cfg, "verdict", stage="code-quality-reviewer", round=round_num,
                 result=result, summary=summary[:120] if summary else "")
+    _emit_event(cfg, "stage.end", stage="code-quality-reviewer", round=round_num,
+                result=result, tokens_in=metrics.input_tokens, tokens_out=metrics.output_tokens)
 
     return ReviewOutput(result=result, summary=summary, issues=issues,
                          summary_feedback=summary_feedback)
@@ -782,7 +788,7 @@ async def _run_audit(
     scope_file_path: Path,
     summary_file_path: Path,
 ) -> AuditOutput:
-    _emit_event(cfg, "stage.start", stage="audit", round=round_num)
+    _emit_event(cfg, "stage.start", stage="security-reviewer", round=round_num)
     prompt_text = prompts.security_reviewer_prompt(
         round_num=round_num,
         scope_file_path=str(scope_file_path),
@@ -834,7 +840,7 @@ async def _run_test(
     scope_file_path: Path,
     summary_file_path: Path,
 ) -> TestOutput:
-    _emit_event(cfg, "stage.start", stage="test", round=round_num)
+    _emit_event(cfg, "stage.start", stage="test-agent", round=round_num)
     prompt_text = prompts.test_agent_prompt(
         round_num=round_num,
         scope_file_path=str(scope_file_path),
@@ -1540,7 +1546,7 @@ class QCFEngine:
                 if cfg.artifact_validation_mode == "hard":
                     print(f"  → Hard gate: blocking pipeline, entering next fix round")
                     _write_validation_fail(cfg, round_num, validation_errors)
-                    # Treat as FAIL — skip review+audit+test, go to next round
+                    # Treat as FAIL — skip review+audit+test agents, go to next round
                     self._consecutive_fails += 1
                     self.overview.add(RoundStageMetric(
                         stage="artifact_validation", result="FAIL",
@@ -1567,12 +1573,11 @@ class QCFEngine:
 
             # ── Stage 2: Review (API + Design) + Audit + Test (parallel) ──
             self.reporter.on_stage_start(round_num, max_rounds, "review")
-            await self.hooks.run_async("pre-stage", stage="review+audit+test", round=round_num)
-            progress.update_before_round("review+audit+test", round_num,
+            await self.hooks.run_async("pre-stage", stage="review", round=round_num)
+            progress.update_before_round("review", round_num,
                 target=design_doc.stem.replace("-design", ""),
                 tasks_done_summary=f"{len(self.overview.entries)} stages completed",
                 next_action_hint=f"[Round {round_num}/{max_rounds}] Reviewing + auditing + testing")
-            _emit_event(cfg, "stage.start", stage="review+audit+test", round=round_num)
 
             # Run 2 review perspectives + audit + test in parallel
             review_api_task = _run_api_reviewer(cfg, round_num=round_num,
@@ -1613,10 +1618,6 @@ class QCFEngine:
             self.overview.add(RoundStageMetric(
                 stage="test", result=test_out.result, summary=test_out.summary,
             ))
-
-            _emit_event(cfg, "stage.end", stage="review+audit+test", round=round_num,
-                         review_result=review.result, audit_result=audit.result,
-                         test_result=test_out.result)
 
             self.reporter.on_round_result(round_num, max_rounds, review, audit)
             await self.hooks.run_async("post-round",
