@@ -839,6 +839,7 @@ async def _run_test(
     round_num: int,
     scope_file_path: Path,
     summary_file_path: Path,
+    design_doc_path: Path,
 ) -> TestOutput:
     _emit_event(cfg, "stage.start", stage="test-agent", round=round_num)
     prompt_text = prompts.test_agent_prompt(
@@ -846,6 +847,7 @@ async def _run_test(
         scope_file_path=str(scope_file_path),
         summary_file_path=str(summary_file_path),
         test_issues_file=str(cfg.test_issues_file),
+        design_doc_path=str(design_doc_path),
     )
     log_path = cfg.log_dir / f"qcf-test-agent-{round_num:02d}.log"
     result_text, metrics = await run_claude(
@@ -1453,7 +1455,7 @@ class QCFEngine:
 
         while round_num <= max_rounds:
             # Clean previous issue files
-            for f in (cfg.issues_file, cfg.review_issues_file, cfg.audit_issues_file):
+            for f in (cfg.issues_file, cfg.review_issues_file, cfg.audit_issues_file, cfg.test_issues_file):
                 f.unlink(missing_ok=True)
 
             # ── Stage 1: Implement or Fix ──
@@ -1591,7 +1593,8 @@ class QCFEngine:
                                      summary_file_path=cfg.summary_file)
             test_task = _run_test(cfg, round_num=round_num,
                                    scope_file_path=cfg.scope_file,
-                                   summary_file_path=cfg.summary_file)
+                                   summary_file_path=cfg.summary_file,
+                                   design_doc_path=design_doc)
             review_api, review_quality, audit, test_out = await asyncio.gather(
                 review_api_task, review_quality_task, audit_task, test_task)
 

@@ -21,6 +21,12 @@ color: cyan
 
 只修改问题列表中涉及的文件和模块，不要修改不相关的代码。
 
+### 关键约束：保留现有文件
+
+1. **务必保留 scope.json 的 `changed_files` 中列出的所有文件** — 即使某个文件不在问题列表中，也绝不能删除它
+2. 修复完成后，**必须逐一验证 `changed_files` 中的每个文件在磁盘上实际存在**（使用 Read 或 Bash ls 检查）
+3. 只有问题列表明确要求删除某个文件时，才可以从 `changed_files` 中移除该文件
+
 {% else %}
 请读取设计文档 {{ design_doc_path }}，根据设计实现对应的代码。
 
@@ -42,8 +48,12 @@ color: cyan
 
 ## Execution Phases
 
-1. **Read** — 读取设计文档/问题列表，理解需求
-2. **Implement/Fix** — 在项目对应位置编写或修改代码
+1. **Read** — 读取设计文档，理解完整需求，确认 Objective / Design / Files to Change / Implementation Plan
+2. **Implement/Fix** — 在项目对应位置编写或修改代码，必须包含：
+   - **空值校验**：所有 API 端点/函数入口处对输入参数做空值和类型校验
+   - **异常处理**：所有可能失败的调用（IO、网络、数据库）必须包裹 try/except 并给出有意义的错误信息
+   - **遵循现有代码风格**：import 分组顺序（标准库 → 三方库 → 内部模块）、logger 声明方式、注解格式等与模块现有代码保持一致
+
 3. **Write artifacts** — 产出 scope.json（范围文件）、summary.md（详细摘要）、brief summary（简略摘要）
 4. **Verify** — 确认所有产出文件已正确写入
 
@@ -56,6 +66,7 @@ color: cyan
 ## Self-Check List
 
 - [ ] 所有新增/修改的代码文件已在 `changed_files` 中列出
+- [ ] `changed_files` 中的每个文件在磁盘上实际存在
 - [ ] scope.json 包含 `changed_files`、`dependencies`、`out_of_scope`（均为列表）
 - [ ] summary.md 包含 **接口签名**、**安全敏感代码路径**、**设计决策摘要**、**代码质量关注点** 四个段落
 - [ ] 每个段落有实质性内容（>50 非空字符）

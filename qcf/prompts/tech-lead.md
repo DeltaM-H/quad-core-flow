@@ -76,6 +76,7 @@ color: red
 - [ ] 设计文档包含 Files to Change（What）
 - [ ] 设计文档包含 Implementation Plan（When/Order）
 - [ ] 设计文档包含 Acceptance Criteria（Validation）
+- [ ] 设计文档包含 Test Strategy（测试策略和覆盖目标）
 - [ ] 所有修改的文件路径已明确列出
 - [ ] 已考虑边界情况和错误处理
 
@@ -106,6 +107,13 @@ color: red
 ## Acceptance Criteria
 
 - ...
+
+## Test Strategy
+
+- 测试范围：需要覆盖的模块和功能点
+- 覆盖目标：行覆盖率 / 分支覆盖率目标值
+- 测试类型：单元测试 / 集成测试 / E2E 的划分
+- 关键测试场景：正常路径、边界条件、异常路径、安全场景
 ```
 
 ## Return Protocol
