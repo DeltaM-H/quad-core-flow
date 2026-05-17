@@ -22,6 +22,7 @@ from .models import (
     ReviewOutput,
     RoundStageMetric,
     RoundsOverview,
+    StageMetrics,
     TestOutput,
     extract_audit_result,
     extract_action_suggestion,
@@ -70,6 +71,14 @@ def _color_result(result: str) -> str:
 
 def _timestamp() -> str:
     return time.strftime("%H:%M:%S")
+
+
+def _fmt_tokens(m: StageMetrics) -> str:
+    """Format cumulative + cache token info for stage output lines."""
+    s = f"{m.input_tokens:,} in / {m.output_tokens:,} out"
+    if m.cache_creation_input_tokens:
+        s += f" | cache +{m.cache_creation_input_tokens:,}"
+    return s
 
 
 def _now() -> str:
@@ -630,7 +639,7 @@ async def _run_api_reviewer(
         print(f"     → API Review SUMMARY_FEEDBACK: {summary_feedback[:120]}")
 
     colored_res = _color_result(result) + (_red(" | TIMEOUT") if metrics.timed_out else "")
-    print(f"  ⚡ API Review: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
+    print(f"  ⚡ API Review: {colored_res} | {_fmt_tokens(metrics)}")
     print(f"     ↳ {summary[:120]}")
 
     _emit_event(cfg, "verdict", stage="api-reviewer", round=round_num,
@@ -687,7 +696,7 @@ async def _run_code_quality_reviewer(
         print(f"     → Code Quality SUMMARY_FEEDBACK: {summary_feedback[:120]}")
 
     colored_res = _color_result(result) + (_red(" | TIMEOUT") if metrics.timed_out else "")
-    print(f"  ⚡ Code Quality: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
+    print(f"  ⚡ Code Quality: {colored_res} | {_fmt_tokens(metrics)}")
     print(f"     ↳ {summary[:120]}")
 
     _emit_event(cfg, "verdict", stage="code-quality-reviewer", round=round_num,
@@ -735,7 +744,7 @@ async def _run_arch_reviewer(
                 issues.append(issue)
 
     colored_res = _color_result(result) + (_red(" | TIMEOUT") if metrics.timed_out else "")
-    print(f"  ⚡ Architecture Review (design): {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
+    print(f"  ⚡ Architecture Review (design): {colored_res} | {_fmt_tokens(metrics)}")
     print(f"     ↳ {summary[:120]}")
 
     _emit_event(cfg, "verdict", stage="arch-reviewer(design)", round=round_num,
@@ -823,7 +832,7 @@ async def _run_audit(
     action_suggestion = extract_action_suggestion(result_text)
 
     colored_res = _color_result(result) + (_red(" | TIMEOUT") if metrics.timed_out else "")
-    print(f"  ⚡ Audit: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
+    print(f"  ⚡ Audit: {colored_res} | {_fmt_tokens(metrics)}")
     print(f"     ↳ {summary[:120]}")
 
     _emit_event(cfg, "stage.end", stage="security-reviewer", round=round_num,
@@ -875,7 +884,7 @@ async def _run_test(
                 failures.append(issue)
 
     colored_res = _color_result(result) + (_red(" | TIMEOUT") if metrics.timed_out else "")
-    print(f"  ⚡ Test: {colored_res} | {metrics.input_tokens} in / {metrics.output_tokens} out")
+    print(f"  ⚡ Test: {colored_res} | {_fmt_tokens(metrics)}")
     print(f"     ↳ {summary[:120]}")
 
     _emit_event(cfg, "stage.end", stage="test-agent", round=round_num,
@@ -1228,6 +1237,8 @@ class ProgressReporter:
 
     def on_stage_end(self, round_num: int, stage: str, metrics: RoundStageMetric) -> list[str]:
         line = f"    输入:{metrics.input_tokens:,} | 输出:{metrics.output_tokens:,}"
+        if hasattr(metrics, 'tool_calls'):
+            line += f" | {metrics.tool_calls}次调用"
         if metrics.timed_out:
             line += " | ⏱ TIMEOUT"
         return [line]

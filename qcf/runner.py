@@ -15,24 +15,52 @@ from .models import StageMetrics
 def parse_claude_json(log_text: str) -> tuple[str, Optional[dict]]:
     """Parse Claude CLI ``--output-format json`` output.
 
-    Reads the ``result`` field (top-level) and ``usage`` sub-object,
-    fixing the common shell-script bug where it looked at ``content`` instead.
+    Extracts cumulative usage across ALL API turns in the conversation
+    (not just the final one), plus prompt-caching metadata. Each tool-use
+    round-trip generates a separate API call; summing them gives the true
+    billed input.
     """
-    for line in reversed(log_text.strip().split("\n")):
-        line = line.strip()
-        if line.startswith("{"):
-            try:
-                data = json.loads(line)
-                result_text = data.get("result", "")
-                usage = data.get("usage", {})
-                return result_text, {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                }
-            except json.JSONDecodeError:
-                continue
+    lines = log_text.strip().split("\n")
 
-    return log_text.strip(), None
+    total_input = 0
+    total_output = 0
+    tool_calls = 0
+    cache_creation = 0
+    cache_read = 0
+    result_text = ""
+    found_usage = False
+
+    for line in reversed(lines):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            data = json.loads(line)
+            # result belongs to the last JSON blob
+            if "result" in data and not result_text:
+                result_text = data.get("result", "")
+
+            usage = data.get("usage")
+            if usage:
+                total_input += usage.get("input_tokens", 0)
+                total_output += usage.get("output_tokens", 0)
+                cache_creation += usage.get("cache_creation_input_tokens", 0)
+                cache_read += usage.get("cache_read_input_tokens", 0)
+                tool_calls += 1
+                found_usage = True
+        except json.JSONDecodeError:
+            continue
+
+    if not found_usage:
+        return result_text or log_text.strip(), None
+
+    return result_text or log_text.strip(), {
+        "input_tokens": total_input,
+        "output_tokens": total_output,
+        "tool_calls": tool_calls,
+        "cache_creation_input_tokens": cache_creation,
+        "cache_read_input_tokens": cache_read,
+    }
 
 
 async def run_claude(
@@ -110,5 +138,8 @@ async def run_claude(
     if usage:
         metrics.input_tokens = usage["input_tokens"]
         metrics.output_tokens = usage["output_tokens"]
+        metrics.tool_calls = usage["tool_calls"]
+        metrics.cache_creation_input_tokens = usage["cache_creation_input_tokens"]
+        metrics.cache_read_input_tokens = usage["cache_read_input_tokens"]
 
     return result_text, metrics
