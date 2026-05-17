@@ -44,6 +44,7 @@ async def run_claude(
     allowed_tools: list[str] | None = None,
     output_format: str = "json",
     thinking_budget: int | None = None,
+    permission_mode: str | None = None,
     cwd: Path | None = None,
 ) -> tuple[str, StageMetrics]:
     """Execute a Claude agent via the CLI, capturing its result.
@@ -55,6 +56,8 @@ async def run_claude(
         model: Claude model override (e.g. ``"opus"``).
         allowed_tools: Tools the agent is permitted to use.
         output_format: ``--output-format`` value.
+        permission_mode: Permission mode override (e.g. ``"acceptEdits"`` to auto-accept
+            file edit/write prompts in automated pipeline contexts).
         cwd: Working directory for the subprocess.
 
     Returns:
@@ -75,6 +78,9 @@ async def run_claude(
     if allowed_tools:
         cmd.append("--allowed-tools")
         cmd.append(" ".join(allowed_tools))
+
+    if permission_mode:
+        cmd.extend(["--permission-mode", permission_mode])
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,

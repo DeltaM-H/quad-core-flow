@@ -857,6 +857,7 @@ async def _run_test(
         allowed_tools=["Read", "Bash", "Write"],
         output_format=cfg.output_format,
         thinking_budget=cfg.thinking_budget,
+        permission_mode="acceptEdits",
         cwd=cfg.root_dir,
     )
 
